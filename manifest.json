@@ -214,6 +214,20 @@
       "description": "Logging level (debug, info, warn, error)",
       "required": false,
       "sensitive": false
+    },
+    "signoz_basic_auth_username": {
+      "type": "string",
+      "title": "Proxy Basic Auth Username",
+      "description": "Username for HTTP Basic Auth on the outbound leg to a reverse proxy fronting SigNoz (SIGNOZ_BASIC_AUTH_USERNAME). Must be paired with SIGNOZ_BASIC_AUTH_PASSWORD. Applied only to the configured SIGNOZ_URL. Incompatible with JWT-bearer SigNoz auth.",
+      "required": false,
+      "sensitive": false
+    },
+    "signoz_basic_auth_password": {
+      "type": "string",
+      "title": "Proxy Basic Auth Password",
+      "description": "Password for HTTP Basic Auth on the outbound leg to a reverse proxy fronting SigNoz (SIGNOZ_BASIC_AUTH_PASSWORD). Must be paired with SIGNOZ_BASIC_AUTH_USERNAME. Never written to logs.",
+      "required": false,
+      "sensitive": true
     }
   },
   "keywords": [

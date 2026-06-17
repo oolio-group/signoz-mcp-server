@@ -60,6 +60,14 @@ type SigNoz struct {
 	httpClient     *http.Client
 	customHeaders  map[string]string
 
+	// basicAuthHeader holds the precomputed "Basic <base64>" value for the
+	// outbound leg to a reverse proxy fronting the SigNoz backend. Empty when
+	// not configured. Never logged.
+	basicAuthHeader string
+	// basicAuthWarnOnce fires the one-time warning when the JWT-bearer path
+	// collides with the managed Basic credential.
+	basicAuthWarnOnce sync.Once
+
 	identityMu       sync.Mutex
 	cachedIdentity   *AnalyticsIdentity
 	identityCachedAt time.Time
@@ -88,13 +96,14 @@ var sharedTransport = func() *http.Transport {
 	return t
 }()
 
-func NewClient(log *slog.Logger, baseURL, apiKey, authHeaderName string, customHeaders map[string]string) *SigNoz {
+func NewClient(log *slog.Logger, baseURL, apiKey, authHeaderName string, customHeaders map[string]string, basicAuthHeader string) *SigNoz {
 	return &SigNoz{
-		logger:         log,
-		baseURL:        baseURL,
-		apiKey:         apiKey,
-		authHeaderName: authHeaderName,
-		customHeaders:  customHeaders,
+		logger:          log,
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		authHeaderName:  authHeaderName,
+		customHeaders:   customHeaders,
+		basicAuthHeader: basicAuthHeader,
 		httpClient: &http.Client{
 			// Default client span name is just the HTTP method (per OTel HTTP
 			// semconv — the client doesn't know a templated route). We keep
@@ -270,8 +279,28 @@ func (s *SigNoz) doValidationRequest(ctx context.Context, reqURL string) (int, [
 	req.Header.Set(ContentType, "application/json")
 	req.Header.Set(s.authHeaderName, s.apiKey)
 
+	// Inject the managed Basic Auth credential for the proxy outbound leg, if
+	// configured. Skip (with a one-time warning) when the SigNoz auth header is
+	// also "Authorization" — the JWT-bearer would be clobbered.
+	if s.basicAuthHeader != "" {
+		if strings.EqualFold(s.authHeaderName, "Authorization") {
+			s.basicAuthWarnOnce.Do(func() {
+				s.logger.Warn("SIGNOZ_BASIC_AUTH_USERNAME/PASSWORD configured but SigNoz auth also uses the Authorization header (JWT-bearer path); Basic credential will not be attached — this combination is unsupported")
+			})
+		} else {
+			req.Header.Set("Authorization", s.basicAuthHeader)
+		}
+	}
+
 	for k, v := range s.customHeaders {
 		if !strings.EqualFold(k, ContentType) && !strings.EqualFold(k, s.authHeaderName) {
+			// When the managed Basic Auth credential is active, also reserve the
+			// Authorization header so a custom-header entry cannot clobber it.
+			if s.basicAuthHeader != "" && strings.EqualFold(k, "Authorization") {
+				s.logger.Warn("Custom header overrides a reserved header",
+					slog.String("header", k), slog.String("value", v))
+				continue
+			}
 			req.Header.Set(k, v)
 		}
 	}
@@ -359,8 +388,28 @@ func (s *SigNoz) doRequest(ctx context.Context, method, reqURL string, body io.R
 
 		req.Header.Set(s.authHeaderName, s.apiKey)
 
+		// Inject the managed Basic Auth credential for the proxy outbound leg, if
+		// configured. Skip (with a one-time warning) when the SigNoz auth header is
+		// also "Authorization" — the JWT-bearer would be clobbered.
+		if s.basicAuthHeader != "" {
+			if strings.EqualFold(s.authHeaderName, "Authorization") {
+				s.basicAuthWarnOnce.Do(func() {
+					s.logger.Warn("SIGNOZ_BASIC_AUTH_USERNAME/PASSWORD configured but SigNoz auth also uses the Authorization header (JWT-bearer path); Basic credential will not be attached — this combination is unsupported")
+				})
+			} else {
+				req.Header.Set("Authorization", s.basicAuthHeader)
+			}
+		}
+
 		for k, v := range s.customHeaders {
 			if strings.EqualFold(k, ContentType) || strings.EqualFold(k, s.authHeaderName) {
+				s.logger.WarnContext(ctx, "Custom header overrides a reserved header",
+					slog.String("header", k), slog.String("value", v))
+				continue
+			}
+			// When the managed Basic Auth credential is active, also reserve the
+			// Authorization header so a custom-header entry cannot clobber it.
+			if s.basicAuthHeader != "" && strings.EqualFold(k, "Authorization") {
 				s.logger.WarnContext(ctx, "Custom header overrides a reserved header",
 					slog.String("header", k), slog.String("value", v))
 				continue

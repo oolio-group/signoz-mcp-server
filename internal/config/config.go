@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -31,6 +32,20 @@ type Config struct {
 
 	CustomHeaders map[string]string
 
+	// BasicAuthHeader is the precomputed "Basic <base64(user:pass)>" credential
+	// for the outbound leg to a reverse proxy fronting the configured SigNoz
+	// backend. Empty when SIGNOZ_BASIC_AUTH_USERNAME / _PASSWORD are not set.
+	// Never logged.
+	BasicAuthHeader string
+
+	// basicAuthUsername retains the username so ValidateConfig can check for a
+	// colon (RFC 7617 forbids colons in usernames) and the both-or-neither rule.
+	// The password is never stored on Config.
+	basicAuthUsername string
+	// basicAuthPasswordSet records whether SIGNOZ_BASIC_AUTH_PASSWORD was non-empty,
+	// used solely for the both-or-neither validation in ValidateConfig.
+	basicAuthPasswordSet bool
+
 	// InstanceURLAllowlist optionally restricts which SigNoz backend hosts the
 	// (multi-tenant) server will proxy to. Empty => every host is allowed.
 	InstanceURLAllowlist util.InstanceURLAllowlist
@@ -54,6 +69,8 @@ const (
 	MCPPort       = "MCP_SERVER_PORT"
 
 	SignozCustomHeaders     = "SIGNOZ_CUSTOM_HEADERS"
+	SignozBasicAuthUsername = "SIGNOZ_BASIC_AUTH_USERNAME"
+	SignozBasicAuthPassword = "SIGNOZ_BASIC_AUTH_PASSWORD"
 	InstanceURLAllowlistEnv = "SIGNOZ_INSTANCE_URL_ALLOWLIST"
 	ClientCacheSize         = "CLIENT_CACHE_SIZE"
 	ClientCacheTTL          = "CLIENT_CACHE_TTL_MINUTES"
@@ -123,6 +140,17 @@ func LoadConfig() (*Config, error) {
 		log.Printf("INFO: SigNoz URL allowlist enabled via %s; only matching SigNoz hosts will be served", InstanceURLAllowlistEnv)
 	}
 
+	// Compute the Basic Auth credential once at startup. We read from the
+	// environment directly (not via getEnv) to avoid accidental default values,
+	// and we never log the password or the encoded header value.
+	basicAuthUsername := os.Getenv(SignozBasicAuthUsername)
+	basicAuthPassword := os.Getenv(SignozBasicAuthPassword)
+	var basicAuthHeader string
+	if basicAuthUsername != "" && basicAuthPassword != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(basicAuthUsername + ":" + basicAuthPassword))
+		basicAuthHeader = "Basic " + encoded
+	}
+
 	return &Config{
 		URL:                     url,
 		APIKey:                  getEnv(SignozApiKey, ""),
@@ -138,6 +166,9 @@ func LoadConfig() (*Config, error) {
 		ClientCacheSize:         cacheSize,
 		ClientCacheTTL:          time.Duration(cacheTTLMinutes) * time.Minute,
 		CustomHeaders:           customHeaders,
+		BasicAuthHeader:         basicAuthHeader,
+		basicAuthUsername:       basicAuthUsername,
+		basicAuthPasswordSet:    basicAuthPassword != "",
 		InstanceURLAllowlist:    instanceURLAllowlist,
 		AnalyticsEnabled:        getEnvBool(AnalyticsEnabledEnv, false),
 		SegmentKey:              getEnv(SegmentKeyEnv, ""),
@@ -207,5 +238,17 @@ func (c *Config) ValidateConfig() error {
 			return fmt.Errorf("OAUTH_ISSUER_URL is required when OAUTH_ENABLED=true")
 		}
 	}
+
+	// Basic Auth validation: both-or-neither, and username must not contain a colon.
+	if c.basicAuthUsername != "" && !c.basicAuthPasswordSet {
+		return fmt.Errorf("%s is set but %s is not; both must be provided together", SignozBasicAuthUsername, SignozBasicAuthPassword)
+	}
+	if c.basicAuthPasswordSet && c.basicAuthUsername == "" {
+		return fmt.Errorf("%s is set but %s is not; both must be provided together", SignozBasicAuthPassword, SignozBasicAuthUsername)
+	}
+	if strings.Contains(c.basicAuthUsername, ":") {
+		return fmt.Errorf("%s must not contain a colon (RFC 7617)", SignozBasicAuthUsername)
+	}
+
 	return nil
 }

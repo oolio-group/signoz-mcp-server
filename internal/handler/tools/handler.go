@@ -16,12 +16,13 @@ import (
 )
 
 type Handler struct {
-	logger        *slog.Logger
-	clientCache   *expirable.LRU[string, *signozclient.SigNoz]
-	configURL     string
-	customHeaders map[string]string
-	meters        *otelpkg.Meters
-	docsIndex     *docsindex.IndexRegistry
+	logger          *slog.Logger
+	clientCache     *expirable.LRU[string, *signozclient.SigNoz]
+	configURL       string
+	customHeaders   map[string]string
+	basicAuthHeader string
+	meters          *otelpkg.Meters
+	docsIndex       *docsindex.IndexRegistry
 
 	// clientOverride, when non-nil, is returned by GetClient instead of
 	// looking up the cache. This exists solely to support unit testing
@@ -50,10 +51,11 @@ func NewHandler(log *slog.Logger, cfg *config.Config) *Handler {
 	}
 
 	return &Handler{
-		logger:        log,
-		clientCache:   expirable.NewLRU[string, *signozclient.SigNoz](cfg.ClientCacheSize, nil, cfg.ClientCacheTTL),
-		configURL:     normalizedURL,
-		customHeaders: cfg.CustomHeaders,
+		logger:          log,
+		clientCache:     expirable.NewLRU[string, *signozclient.SigNoz](cfg.ClientCacheSize, nil, cfg.ClientCacheTTL),
+		configURL:       normalizedURL,
+		customHeaders:   cfg.CustomHeaders,
+		basicAuthHeader: cfg.BasicAuthHeader,
 	}
 }
 
@@ -84,16 +86,19 @@ func (h *Handler) GetClient(ctx context.Context) (signozclient.Client, error) {
 		return cachedClient, nil
 	}
 
-	// Only attach custom headers when the tenant URL matches the configured
-	// SIGNOZ_URL to prevent leaking proxy-auth credentials (e.g. Cloudflare
-	// Access tokens) to arbitrary third-party hosts.
+	// Only attach custom headers and the managed Basic Auth credential when the
+	// tenant URL matches the configured SIGNOZ_URL to prevent leaking
+	// proxy-auth credentials (e.g. Cloudflare Access tokens, Basic Auth) to
+	// arbitrary third-party hosts.
 	var headers map[string]string
+	var basicAuthHeader string
 	if strings.EqualFold(signozURL, h.configURL) {
 		headers = h.customHeaders
+		basicAuthHeader = h.basicAuthHeader
 	}
 
 	h.logger.DebugContext(ctx, "Creating new SigNoz client for tenant")
-	newClient := signozclient.NewClient(h.logger, signozURL, apiKey, authHeader, headers)
+	newClient := signozclient.NewClient(h.logger, signozURL, apiKey, authHeader, headers, basicAuthHeader)
 	newClient.SetMeters(h.meters)
 	h.clientCache.Add(cacheKey, newClient)
 	return newClient, nil

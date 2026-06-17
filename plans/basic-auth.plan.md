@@ -1,7 +1,7 @@
 # Plan: Proxy Basic Auth for SigNoz Backend
 
 ## Status
-Planning
+In Progress
 
 ## Context
 When self-hosted SigNoz sits behind a reverse proxy that enforces HTTP Basic Auth, the
