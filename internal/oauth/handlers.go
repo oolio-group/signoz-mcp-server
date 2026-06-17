@@ -322,15 +322,17 @@ func (h *Handler) HandleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) validateSigNozCredentials(ctx context.Context, signozURL, apiKey string) error {
-	// Only forward custom headers when the user-supplied URL matches the
-	// configured SIGNOZ_URL to prevent leaking proxy-auth credentials to
-	// attacker-controlled hosts.
+	// Only forward custom headers and the managed Basic Auth credential when the
+	// user-supplied URL matches the configured SIGNOZ_URL to prevent leaking
+	// proxy-auth credentials to attacker-controlled hosts.
 	var headers map[string]string
+	var basicAuthHeader string
 	configNormalized, _ := util.NormalizeSigNozURL(h.config.URL)
 	if strings.EqualFold(signozURL, configNormalized) {
 		headers = h.config.CustomHeaders
+		basicAuthHeader = h.config.BasicAuthHeader
 	}
-	signozClient := client.NewClient(h.logger, signozURL, apiKey, "SIGNOZ-API-KEY", headers)
+	signozClient := client.NewClient(h.logger, signozURL, apiKey, "SIGNOZ-API-KEY", headers, basicAuthHeader)
 	return signozClient.ValidateCredentials(ctx)
 }
 

@@ -96,3 +96,66 @@ func TestValidateConfig_StdioRequiresConfiguredCredentials(t *testing.T) {
 
 	require.ErrorContains(t, cfg.ValidateConfig(), "SIGNOZ_API_KEY is required")
 }
+
+// TestLoadConfig_BasicAuth verifies that the BasicAuthHeader is precomputed
+// correctly and that the raw credentials are never exposed on Config.
+func TestLoadConfig_BasicAuth(t *testing.T) {
+	t.Run("both vars set produces correct Basic header", func(t *testing.T) {
+		t.Setenv("SIGNOZ_BASIC_AUTH_USERNAME", "alice")
+		t.Setenv("SIGNOZ_BASIC_AUTH_PASSWORD", "s3cret")
+		t.Setenv("SIGNOZ_URL", "http://localhost:8080")
+		t.Setenv("SIGNOZ_API_KEY", "k")
+
+		cfg, err := LoadConfig()
+		require.NoError(t, err)
+		// base64("alice:s3cret") == "YWxpY2U6czNjcmV0"
+		assert.Equal(t, "Basic YWxpY2U6czNjcmV0", cfg.BasicAuthHeader)
+	})
+
+	t.Run("neither var set leaves BasicAuthHeader empty", func(t *testing.T) {
+		t.Setenv("SIGNOZ_URL", "http://localhost:8080")
+		t.Setenv("SIGNOZ_API_KEY", "k")
+
+		cfg, err := LoadConfig()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.BasicAuthHeader)
+	})
+}
+
+// TestValidateConfig_BasicAuth exercises the both-or-neither and colon rules.
+func TestValidateConfig_BasicAuth(t *testing.T) {
+	base := Config{TransportMode: "http", Port: "8000"}
+
+	t.Run("both set is valid", func(t *testing.T) {
+		cfg := base
+		cfg.basicAuthUsername = "user"
+		cfg.basicAuthPasswordSet = true
+		require.NoError(t, cfg.ValidateConfig())
+	})
+
+	t.Run("username only errors", func(t *testing.T) {
+		cfg := base
+		cfg.basicAuthUsername = "user"
+		cfg.basicAuthPasswordSet = false
+		require.ErrorContains(t, cfg.ValidateConfig(), SignozBasicAuthPassword)
+	})
+
+	t.Run("password only errors", func(t *testing.T) {
+		cfg := base
+		cfg.basicAuthUsername = ""
+		cfg.basicAuthPasswordSet = true
+		require.ErrorContains(t, cfg.ValidateConfig(), SignozBasicAuthUsername)
+	})
+
+	t.Run("username with colon errors", func(t *testing.T) {
+		cfg := base
+		cfg.basicAuthUsername = "user:name"
+		cfg.basicAuthPasswordSet = true
+		require.ErrorContains(t, cfg.ValidateConfig(), "colon")
+	})
+
+	t.Run("neither set is valid", func(t *testing.T) {
+		cfg := base
+		require.NoError(t, cfg.ValidateConfig())
+	})
+}

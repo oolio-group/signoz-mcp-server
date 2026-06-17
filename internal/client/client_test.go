@@ -99,7 +99,7 @@ func TestGetAlertByRuleID(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.GetAlertByRuleID(ctx, tt.ruleID)
@@ -142,7 +142,7 @@ func TestListAlertRules(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	result, err := client.ListAlertRules(context.Background())
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestValidateCredentials(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			err := client.ValidateCredentials(context.Background())
 
@@ -362,7 +362,7 @@ func TestGetAnalyticsIdentity(t *testing.T) {
 			if tt.authHeaderName == "Authorization" {
 				apiKey = "Bearer jwt-token"
 			}
-			client := NewClient(logger, server.URL, apiKey, tt.authHeaderName, nil)
+			client := NewClient(logger, server.URL, apiKey, tt.authHeaderName, nil, "")
 
 			identity, err := client.GetAnalyticsIdentity(context.Background())
 
@@ -389,7 +389,7 @@ func TestGetAnalyticsIdentity_CachesResult(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "Bearer jwt", "Authorization", nil)
+	client := NewClient(logger, server.URL, "Bearer jwt", "Authorization", nil, "")
 
 	for i := 0; i < 5; i++ {
 		identity, err := client.GetAnalyticsIdentity(context.Background())
@@ -411,7 +411,7 @@ func TestGetAnalyticsIdentity_ConcurrentCallsDedupe(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "Bearer jwt", "Authorization", nil)
+	client := NewClient(logger, server.URL, "Bearer jwt", "Authorization", nil, "")
 
 	const callers = 10
 	var wg sync.WaitGroup
@@ -438,7 +438,7 @@ func TestDoRequest_RetryLogsDebugThenWarn(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	_, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, time.Second)
 	require.Error(t, err)
@@ -484,7 +484,7 @@ func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	body, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, time.Second)
 	require.NoError(t, err)
@@ -521,7 +521,7 @@ func TestDoRequest_NonRetryableStatusOmitsRetriesExhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	_, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, time.Second)
 	require.Error(t, err)
@@ -616,7 +616,7 @@ func TestListMetricKeys(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.ListMetricKeys(ctx)
@@ -736,7 +736,7 @@ func TestListDashboards(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.ListDashboards(ctx)
@@ -865,7 +865,7 @@ func TestListServices(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.ListServices(ctx, tt.start, tt.end)
@@ -1051,7 +1051,7 @@ func TestGetAlertHistory(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.GetAlertHistory(ctx, tt.ruleID, tt.request)
@@ -1216,7 +1216,7 @@ func TestQueryBuilderV5(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.QueryBuilderV5(ctx, tt.queryBody)
@@ -1272,7 +1272,7 @@ func TestCreateDashboard(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	d := types.Dashboard{
 		Title:   "whatever",
@@ -1310,7 +1310,7 @@ func TestUpdateDashboard(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	d := types.Dashboard{
 		Title:   "updated-title",
@@ -1333,7 +1333,7 @@ func TestDeleteDashboard(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.DeleteDashboard(context.Background(), "dash-456")
 	require.NoError(t, err)
@@ -1421,7 +1421,7 @@ func TestGetFieldKeys(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.GetFieldKeys(ctx, tt.signal, tt.metricName, tt.searchText, tt.fieldContext, tt.fieldDataType, tt.source)
@@ -1522,7 +1522,7 @@ func TestGetFieldValues(t *testing.T) {
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
 			result, err := client.GetFieldValues(ctx, tt.signal, tt.fieldName, tt.metricName, tt.searchText, tt.source)
@@ -1558,7 +1558,7 @@ func TestDoRequest_RetryOn503ThenSuccess(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil, "")
 
 	result, err := c.doRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil, DefaultQueryTimeout)
 	require.NoError(t, err)
@@ -1576,7 +1576,7 @@ func TestDoRequest_RetriesExhausted(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil, "")
 
 	result, err := c.doRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil, DefaultQueryTimeout)
 	assert.Error(t, err)
@@ -1593,7 +1593,7 @@ func TestDoRequest_ContextCancelled(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
@@ -1612,7 +1612,7 @@ func TestDoRequest_NoRetryOn4xx(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil, "")
 
 	_, err := c.doRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil, DefaultQueryTimeout)
 	assert.Error(t, err)
@@ -1635,7 +1635,7 @@ func TestDoRequest_RetryOn429(t *testing.T) {
 	defer srv.Close()
 
 	logger := logpkg.New("debug")
-	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logger, srv.URL, "test-key", "SIGNOZ-API-KEY", nil, "")
 
 	result, err := c.doRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil, DefaultQueryTimeout)
 	require.NoError(t, err)
@@ -1664,7 +1664,7 @@ func TestNewClient_SetsCustomHeaders(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", customHeaders)
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", customHeaders, "")
 
 	_, err := client.ListAlerts(context.Background(), types.ListAlertsParams{})
 	assert.NoError(t, err)
@@ -1682,7 +1682,7 @@ func TestNewClient_NilHeaders(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	_, err := client.ListAlerts(context.Background(), types.ListAlertsParams{})
 	assert.NoError(t, err)
@@ -1699,7 +1699,7 @@ func TestNewClient_EmptyHeaders(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", map[string]string{})
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", map[string]string{}, "")
 
 	_, err := client.ListAlerts(context.Background(), types.ListAlertsParams{})
 	assert.NoError(t, err)
@@ -1726,7 +1726,7 @@ func TestNewClient_ReservedHeadersSkipped(t *testing.T) {
 	defer server.Close()
 
 	logger := logpkg.New("debug")
-	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", customHeaders)
+	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", customHeaders, "")
 
 	_, err := client.ListAlerts(context.Background(), types.ListAlertsParams{})
 	assert.NoError(t, err)
@@ -1740,7 +1740,7 @@ func TestCreateAlertRule_v2Returns201(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{"id":"rule-123"}}`))
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	data, err := client.CreateAlertRule(context.Background(), []byte(`{"alert":"x"}`))
 	require.NoError(t, err)
@@ -1756,7 +1756,7 @@ func TestUpdateAlertRule_v2Returns204(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.UpdateAlertRule(context.Background(), "abc-123", []byte(`{"alert":"x"}`))
 	require.NoError(t, err)
@@ -1771,7 +1771,7 @@ func TestDeleteAlertRule_v2Returns204(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.DeleteAlertRule(context.Background(), "abc-123")
 	require.NoError(t, err)
@@ -1786,7 +1786,7 @@ func TestTestNotificationChannel_UsesNewPath(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.TestNotificationChannel(context.Background(), []byte(`{"name":"x"}`))
 	require.NoError(t, err)
@@ -1800,7 +1800,7 @@ func TestUpdateNotificationChannel_Returns204(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.UpdateNotificationChannel(context.Background(), "42", []byte(`{"name":"x"}`))
 	require.NoError(t, err)
@@ -1815,7 +1815,7 @@ func TestDeleteNotificationChannel(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil)
+	client := NewClient(logpkg.New("debug"), srv.URL, "k", "SIGNOZ-API-KEY", nil, "")
 
 	err := client.DeleteNotificationChannel(context.Background(), "42")
 	require.NoError(t, err)
@@ -1835,7 +1835,7 @@ func TestListViews(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
 	_, err := c.ListViews(context.Background(), "traces", "ak", "ops")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, gotMethod)
@@ -1853,7 +1853,7 @@ func TestGetView(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{}}`))
 	}))
 	defer server.Close()
-	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
 	_, err := c.GetView(context.Background(), "view-uuid-1")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, gotMethod)
@@ -1870,7 +1870,7 @@ func TestCreateView(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{"id":"new-id"}}`))
 	}))
 	defer server.Close()
-	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
 	body := []byte(`{"name":"x","sourcePage":"traces","compositeQuery":{}}`)
 	_, err := c.CreateView(context.Background(), body)
 	require.NoError(t, err)
@@ -1887,7 +1887,7 @@ func TestUpdateView(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{}}`))
 	}))
 	defer server.Close()
-	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
 	_, err := c.UpdateView(context.Background(), "view-1", []byte(`{}`))
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPut, gotMethod)
@@ -1902,7 +1902,7 @@ func TestDeleteView(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer server.Close()
-	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil)
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
 	_, err := c.DeleteView(context.Background(), "view-1")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodDelete, gotMethod)
@@ -1942,7 +1942,7 @@ func TestDoRequest_RejectsOversizeResponse(t *testing.T) {
 	defer server.Close()
 
 	var logBuf bytes.Buffer
-	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	_, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, 30*time.Second)
 	require.Error(t, err)
@@ -1961,9 +1961,130 @@ func TestDoRequest_AllowsLargeUnderCapResponse(t *testing.T) {
 	defer server.Close()
 
 	var logBuf bytes.Buffer
-	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil)
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 	got, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, 30*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, len(body), len(got))
+}
+
+// ---------------------------------------------------------------------------
+// Basic Auth tests (Issue #1 + #2)
+// ---------------------------------------------------------------------------
+
+// TestBasicAuth_HeaderAttachedWhenConfigured verifies that when basicAuthHeader
+// is set and authHeaderName is NOT "Authorization", the managed Basic credential
+// is injected on outbound requests (both doRequest and doValidationRequest).
+func TestBasicAuth_HeaderAttachedWhenConfigured(t *testing.T) {
+	// base64("alice:s3cret") == "YWxpY2U6czNjcmV0"
+	const wantBasicHeader = "Basic YWxpY2U6czNjcmV0"
+
+	t.Run("doRequest attaches Basic header", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, wantBasicHeader, r.Header.Get("Authorization"), "Basic header must be present")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		c := NewClient(logpkg.New("debug"), server.URL, "my-api-key", "SIGNOZ-API-KEY", nil, wantBasicHeader)
+		_, err := c.doRequest(context.Background(), http.MethodGet, server.URL, nil, 5*time.Second)
+		require.NoError(t, err)
+	})
+
+	t.Run("doValidationRequest attaches Basic header", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, wantBasicHeader, r.Header.Get("Authorization"), "Basic header must be present")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		c := NewClient(logpkg.New("debug"), server.URL, "my-api-key", "SIGNOZ-API-KEY", nil, wantBasicHeader)
+		status, _, err := c.doValidationRequest(context.Background(), server.URL)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+	})
+}
+
+// TestBasicAuth_SkippedWhenJWTBearerCollides verifies that when the SigNoz auth
+// header is "Authorization" (JWT-bearer path) and basicAuthHeader is also set,
+// the Basic credential is NOT attached and a one-time warning is emitted.
+func TestBasicAuth_SkippedWhenJWTBearerCollides(t *testing.T) {
+	const wantBasicHeader = "Basic dXNlcjpwYXNz"
+
+	t.Run("doRequest skips Basic when authHeaderName is Authorization", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The Authorization header must carry the JWT bearer, not the Basic credential.
+			assert.Equal(t, "Bearer my-jwt", r.Header.Get("Authorization"), "JWT bearer must be preserved")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		c := NewClient(newBufferedLogger(&logBuf, slog.LevelWarn), server.URL, "Bearer my-jwt", "Authorization", nil, wantBasicHeader)
+		_, err := c.doRequest(context.Background(), http.MethodGet, server.URL, nil, 5*time.Second)
+		require.NoError(t, err)
+
+		// Warning must appear in logs.
+		assert.Contains(t, logBuf.String(), "unsupported")
+	})
+
+	t.Run("warning is emitted only once (deduplication)", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		c := NewClient(newBufferedLogger(&logBuf, slog.LevelWarn), server.URL, "Bearer my-jwt", "Authorization", nil, wantBasicHeader)
+		// Fire two requests; the warning should appear exactly once.
+		for range 2 {
+			_, err := c.doRequest(context.Background(), http.MethodGet, server.URL, nil, 5*time.Second)
+			require.NoError(t, err)
+		}
+
+		count := strings.Count(logBuf.String(), "unsupported")
+		assert.Equal(t, 1, count, "warning should be logged exactly once across multiple requests")
+	})
+
+	t.Run("credential value is not in the warning log output", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		c := NewClient(newBufferedLogger(&logBuf, slog.LevelWarn), server.URL, "Bearer my-jwt", "Authorization", nil, wantBasicHeader)
+		_, _ = c.doRequest(context.Background(), http.MethodGet, server.URL, nil, 5*time.Second)
+
+		// Neither the encoded value nor "Basic" should appear in the log.
+		assert.NotContains(t, logBuf.String(), wantBasicHeader)
+	})
+}
+
+// TestBasicAuth_CustomHeaderAuthorizationReserved verifies that when basicAuthHeader
+// is configured, a user-supplied custom header named "Authorization" is blocked
+// so it cannot override the managed Basic credential.
+func TestBasicAuth_CustomHeaderAuthorizationReserved(t *testing.T) {
+	const wantBasicHeader = "Basic dXNlcjpwYXNz"
+
+	customHeaders := map[string]string{
+		"Authorization": "sneaky-override",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The Authorization header must still carry the managed Basic credential.
+		assert.Equal(t, wantBasicHeader, r.Header.Get("Authorization"), "managed Basic credential must not be clobbered")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(logpkg.New("debug"), server.URL, "my-api-key", "SIGNOZ-API-KEY", customHeaders, wantBasicHeader)
+	_, err := c.doRequest(context.Background(), http.MethodGet, server.URL, nil, 5*time.Second)
+	require.NoError(t, err)
 }
