@@ -143,26 +143,33 @@ Create an API key in **Settings → API Keys** in SigNoz. Only **Admin** users c
 
 ### Download Binary (Recommended)
 
-Download the latest binary from [GitHub Releases](https://github.com/SigNoz/signoz-mcp-server/releases):
+Download the latest binary from this fork's [GitHub Releases](https://github.com/tillpos-tony/signoz-mcp-server/releases):
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/SigNoz/signoz-mcp-server/releases/latest/download/signoz-mcp-server_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/tillpos-tony/signoz-mcp-server/releases/latest/download/signoz-mcp-server_darwin_arm64.tar.gz | tar xz
 
 # macOS (Intel)
-curl -L https://github.com/SigNoz/signoz-mcp-server/releases/latest/download/signoz-mcp-server_darwin_amd64.tar.gz | tar xz
+curl -L https://github.com/tillpos-tony/signoz-mcp-server/releases/latest/download/signoz-mcp-server_darwin_amd64.tar.gz | tar xz
 
 # Linux (amd64)
-curl -L https://github.com/SigNoz/signoz-mcp-server/releases/latest/download/signoz-mcp-server_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/tillpos-tony/signoz-mcp-server/releases/latest/download/signoz-mcp-server_linux_amd64.tar.gz | tar xz
+
+# Linux (arm64)
+curl -L https://github.com/tillpos-tony/signoz-mcp-server/releases/latest/download/signoz-mcp-server_linux_arm64.tar.gz | tar xz
 ```
 
-This extracts a `signoz-mcp-server` binary in the current directory. Move it somewhere on your PATH or note the absolute path for the config below.
+This extracts a `signoz-mcp-server_<os>_<arch>/` directory containing `bin/signoz-mcp-server`. Move that binary somewhere on your PATH or note its absolute path for the config below.
+
+> These fork releases are built and attached manually (`go build` cross-compiled locally, matching the `.goreleaser.yaml` matrix) rather than via the CI-driven goreleaser-pro workflow, since this fork doesn't have the upstream `GORELEASER_KEY` configured.
 
 ### Go Install
 
 ```bash
 go install github.com/SigNoz/signoz-mcp-server/cmd/server@latest
 ```
+
+> This installs from the **upstream** `SigNoz/signoz-mcp-server` module path (`go install` requires the import path to match the module's declared path in `go.mod`, which this fork hasn't changed). It will not include this fork's changes — use the binary download or Build from Source below for those.
 
 The binary is installed as `server` to `$GOPATH/bin/` (default: `$HOME/go/bin/server`). You may want to rename it:
 
@@ -172,7 +179,7 @@ mv "$(go env GOPATH)/bin/server" "$(go env GOPATH)/bin/signoz-mcp-server"
 
 ### Docker
 
-Docker images are available on [Docker Hub](https://hub.docker.com/r/signoz/signoz-mcp-server/tags):
+Docker images are available on [Docker Hub](https://hub.docker.com/r/signoz/signoz-mcp-server/tags), built from **upstream**:
 
 ```bash
 docker pull signoz/signoz-mcp-server:latest
@@ -189,12 +196,12 @@ docker run -p 8000:8000 \
   signoz/signoz-mcp-server:latest
 ```
 
-Use a specific version tag (e.g. `v0.1.0`) instead of `latest` for pinned deployments.
+Use a specific version tag (e.g. `v0.1.0`) instead of `latest` for pinned deployments. This fork does not publish its own Docker images — build the image locally from `Dockerfile` if you need this fork's changes in a container.
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/SigNoz/signoz-mcp-server.git
+git clone https://github.com/tillpos-tony/signoz-mcp-server.git
 cd signoz-mcp-server
 make build
 ```
