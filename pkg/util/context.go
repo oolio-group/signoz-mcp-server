@@ -14,17 +14,18 @@ const (
 	authHeaderContextKey           contextKey = "auth_header"
 	signozURLContextKey            contextKey = "signoz_url"
 	searchContextContextKey        contextKey = "search_context"
-	sessionIDContextKey            contextKey = "session_id"
 	toolNameContextKey             contextKey = "tool_name"
 	clientSourceContextKey         contextKey = "client_source"
 	assistantThreadIDContextKey    contextKey = "assistant_thread_id"
 	assistantExecutionIDContextKey contextKey = "assistant_execution_id"
 )
 
-// ClientSourceUserClient is the default for client_source when the header
-// is absent or blank — emitting a concrete value keeps downstream group-bys
-// free of null-handling.
-const ClientSourceUserClient = "user-client"
+// Client source values used by the bounded request telemetry taxonomy.
+const (
+	ClientSourceUserClient  = "user-client"
+	ClientSourceAIAssistant = "ai-assistant"
+	ClientSourceOther       = "other"
+)
 
 // CallerCorrelationHeaderMaxLen bounds advisory caller-correlation header
 // values. They flow into every log record, span attribute, and Segment
@@ -46,6 +47,20 @@ func NormalizeCallerCorrelationValue(s string) string {
 		return s
 	}
 	return string(runes[:CallerCorrelationHeaderMaxLen])
+}
+
+// NormalizeClientSource collapses the advisory ingress header to a bounded
+// metric-safe taxonomy used consistently across logs, spans, metrics, and
+// analytics.
+func NormalizeClientSource(s string) string {
+	switch normalized := NormalizeCallerCorrelationValue(s); normalized {
+	case ClientSourceAIAssistant:
+		return normalized
+	case "", ClientSourceUserClient:
+		return ClientSourceUserClient
+	default:
+		return ClientSourceOther
+	}
 }
 
 // SetAPIKey stores the API key in the context
@@ -92,17 +107,6 @@ func GetSearchContext(ctx context.Context) (string, bool) {
 	return text, ok
 }
 
-// SetSessionID stores the MCP session ID in the context.
-func SetSessionID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, sessionIDContextKey, id)
-}
-
-// GetSessionID retrieves the MCP session ID from the context.
-func GetSessionID(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(sessionIDContextKey).(string)
-	return id, ok
-}
-
 // SetToolName stores the MCP tool name in the context.
 func SetToolName(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, toolNameContextKey, name)
@@ -147,11 +151,13 @@ func GetAssistantExecutionID(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
-// HashTenantKey returns a SHA-256 hash of apiKey and signozURL, suitable for
-// use as a cache/map key without exposing the raw API key in memory.
-// A null-byte separator is used to prevent collisions between different
-// (apiKey, signozURL) pairs that contain colons.
-func HashTenantKey(apiKey, signozURL string) string {
-	h := sha256.Sum256([]byte(apiKey + "\x00" + signozURL))
+// HashTenantKey returns a SHA-256 hash of authHeader, apiKey and signozURL,
+// suitable for use as a cache/map key without exposing the raw API key in
+// memory. The auth-header name is included so two requests carrying the same
+// raw token in different upstream modes (Authorization vs SIGNOZ-API-KEY)
+// never share a cached client. Null-byte separators prevent collisions
+// between different tuples whose fields contain colons.
+func HashTenantKey(authHeader, apiKey, signozURL string) string {
+	h := sha256.Sum256([]byte(authHeader + "\x00" + apiKey + "\x00" + signozURL))
 	return hex.EncodeToString(h[:])
 }

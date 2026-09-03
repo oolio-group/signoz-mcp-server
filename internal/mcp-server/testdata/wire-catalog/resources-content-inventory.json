@@ -1,0 +1,288 @@
+[
+  {
+    "identity": "signoz://alert/examples",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://alert/examples",
+        "mimeType": "text/markdown",
+        "serializedLength": 31840,
+        "sha256": "dddf47fa8645bf62a01aba42351c1a82b3cc8715e7b7cbf9e74745fb89d1a345"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://alert/instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://alert/instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 23238,
+        "sha256": "a2e40ba49b5268bf7499da0e58d331ab9b03066fc60a164869ef96549dbb90c3"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-logs-example",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-logs-example",
+        "mimeType": "text/markdown",
+        "serializedLength": 7896,
+        "sha256": "a777972b29a83213e5717369356895a5e228b01b680ed111f49fa8ca18396d79"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-metrics-example",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-metrics-example",
+        "mimeType": "text/markdown",
+        "serializedLength": 11746,
+        "sha256": "eda92044dc9d2359157e80400ccfffe2c0729e8b6ff07a413be7ad9fd0a9a0cd"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-schema-for-logs",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-schema-for-logs",
+        "mimeType": "text/markdown",
+        "serializedLength": 4766,
+        "sha256": "9cf73ec9c7685233b902760514d4f4a8a7bb75f72c70411c2ba56333fae91853"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-schema-for-metrics",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-schema-for-metrics",
+        "mimeType": "text/markdown",
+        "serializedLength": 7538,
+        "sha256": "db92d7396852e159f932aade804158c7c4c84f5d43a056f3ee5ed1c76b5422c1"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-schema-for-traces",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-schema-for-traces",
+        "mimeType": "text/markdown",
+        "serializedLength": 18124,
+        "sha256": "f078c74e2795a7acbdcedde0d8a1d2291b4adf3c23cd48cdef265156cd274434"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/clickhouse-traces-example",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/clickhouse-traces-example",
+        "mimeType": "text/markdown",
+        "serializedLength": 8774,
+        "sha256": "8179e4cc5ac81bd79547765a57f40887842a4973472576420f237a16597a3f74"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/examples",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/examples",
+        "mimeType": "text/markdown",
+        "serializedLength": 15914,
+        "sha256": "2a3975aa15c586eba2b473cbf302c6b3eb661e11a0fa56158bcbb2549444eb28"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 7506,
+        "sha256": "cd63c15e24f5ea058b56fda3113d8a27dcae0acfe3f16cb8d8c15b89dcc3e1d6"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/list-filter-guide",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/list-filter-guide",
+        "mimeType": "text/markdown",
+        "serializedLength": 3677,
+        "sha256": "b516747be7400beb681a79e4f0976db024371ff7a01add807a0667ebdd028e3d"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/patch-instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/patch-instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 4418,
+        "sha256": "9d2e20b7eef686c630d298526a90340504cd47dd1f266dffc4af2affb30268f5"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/query-builder-example",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/query-builder-example",
+        "mimeType": "text/markdown",
+        "serializedLength": 17409,
+        "sha256": "12e6e0e7747df5fab8ed0393bcde4fccb7f61db8efeeb2deafc850121b066aed"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/widgets-examples",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/widgets-examples",
+        "mimeType": "text/markdown",
+        "serializedLength": 31493,
+        "sha256": "88a8bd00b77c8e1922f6346c7e222760b3978f9a86e07b743856ff2f1673516a"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://dashboard/widgets-instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://dashboard/widgets-instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 10496,
+        "sha256": "f0b4f13467f2eec42ff64ebfe425e421f2e95083702e44839ed6dbe045219174"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://docs/sitemap",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://docs/sitemap",
+        "mimeType": "text/markdown",
+        "serializedLength": 194,
+        "sha256": "6fa5cc3f25bead23c2fd5889480b873186c16070f3bb1314a7ba8e7957925804"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://logs/query-builder-guide",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://logs/query-builder-guide",
+        "mimeType": "text/markdown",
+        "serializedLength": 11113,
+        "sha256": "a5973fb3c0972382083b29c723d219b152d04cf8d7240520a37ee35a8635ad86"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://metrics-aggregation-guide",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://metrics-aggregation-guide",
+        "mimeType": "text/markdown",
+        "serializedLength": 12273,
+        "sha256": "5608a9def2662817636bcece8193e2a5ceaf9bc7ca6dbbe9b08aece8eb28c472"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://promql/instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://promql/instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 10903,
+        "sha256": "475ae5dfaf511e81032dcbce49fc205785905e2d785379d8b02006e8000ac29e"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://traces/query-builder-guide",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://traces/query-builder-guide",
+        "mimeType": "text/markdown",
+        "serializedLength": 10590,
+        "sha256": "b170b7040a57f194a0ace33091e59ecb828b535effaa59e52e4e64afe04e8567"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://view/examples",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://view/examples",
+        "mimeType": "text/markdown",
+        "serializedLength": 6218,
+        "sha256": "ca3535c71129d038d91b30f7f92e69a6afb378f94adb2bc68ad1423260215978"
+      }
+    ]
+  },
+  {
+    "identity": "signoz://view/instructions",
+    "contents": [
+      {
+        "index": 0,
+        "kind": "text",
+        "uri": "signoz://view/instructions",
+        "mimeType": "text/markdown",
+        "serializedLength": 7227,
+        "sha256": "dd795f86f12cb0b5389db98017eaa50ede52893919760b3d6c5afffa5190a1a6"
+      }
+    ]
+  }
+]

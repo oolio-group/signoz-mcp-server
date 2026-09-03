@@ -1,12 +1,140 @@
 package tools
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
 
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
+	logpkg "github.com/SigNoz/signoz-mcp-server/pkg/log"
+	"github.com/SigNoz/signoz-mcp-server/pkg/toolerrors"
 	"github.com/SigNoz/signoz-mcp-server/pkg/types"
-	"github.com/mark3labs/mcp-go/mcp"
 )
+
+func TestToolInvocationDecoratorRecoversToCodedInternalError(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(logpkg.NewContextHandler(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	h := &Handler{logger: logger}
+	handler := h.toolInvocationDecorator("panic_probe", func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		panic("secret-panic-canary")
+	})
+
+	result, err := handler(context.Background(), mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("tool panic returned protocol error: %v", err)
+	}
+	if result == nil || !result.IsError || toolerrors.Code(result) != CodeInternalError {
+		t.Fatalf("tool panic result = %#v, want coded INTERNAL_ERROR", result)
+	}
+	if strings.Contains(logs.String(), "secret-panic-canary") {
+		t.Fatal("panic value leaked into operator log")
+	}
+	if !strings.Contains(logs.String(), "tool handler panic recovered") || !strings.Contains(logs.String(), `"gen_ai.tool.name":"panic_probe"`) || !strings.Contains(logs.String(), `"stack":`) {
+		t.Fatalf("panic log missing bounded operator context: %s", logs.String())
+	}
+}
+
+type uncloneableSchema struct{}
+
+func (uncloneableSchema) MarshalJSON() ([]byte, error) { return nil, fmt.Errorf("clone boom") }
+
+func TestCloneSchemaValueFailureIsFatal(t *testing.T) {
+	defer func() {
+		got := fmt.Sprint(recover())
+		if !strings.Contains(got, "clone tool schema (type tools.uncloneableSchema): marshal:") {
+			t.Fatalf("panic = %q", got)
+		}
+	}()
+	cloneSchemaValue(uncloneableSchema{})
+}
+
+func TestValidationDiagnosisUsesOnlyAdvertisedTopLevelParameters(t *testing.T) {
+	compiled, err := compileToolSchema("diagnostic_probe", "input", json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"type":"object",
+		"properties":{
+			"schemaVersion":{"type":"string"},
+			"spec":{"$ref":"#/$defs/spec"},
+			"tags":{"type":"array"}
+		},
+		"required":["schemaVersion","spec","tags"],
+		"additionalProperties":false,
+		"$defs":{"spec":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.diagnostic == nil {
+		t.Fatal("top-level diagnostic schema did not compile with local $defs")
+	}
+
+	tests := []struct {
+		name           string
+		value          any
+		wantParameters []string
+		wantPath       string
+		wantConstraint string
+	}{
+		{
+			name:           "local ref property mismatch",
+			value:          map[string]any{"schemaVersion": "v1", "spec": "wrong", "tags": []any{}},
+			wantParameters: []string{"spec"},
+			wantPath:       "spec",
+			wantConstraint: "schema",
+		},
+		{
+			name:           "missing required fields",
+			value:          map[string]any{},
+			wantParameters: []string{"schemaVersion", "spec", "tags"},
+			wantPath:       "<multiple>",
+			wantConstraint: "required",
+		},
+		{
+			name:           "unknown client key is not reflected",
+			value:          map[string]any{"schemaVersion": "v1", "spec": map[string]any{"name": "ok"}, "tags": []any{}, "attacker-controlled-secret": true},
+			wantPath:       "<root>",
+			wantConstraint: "schema",
+		},
+		{
+			name:           "non-object remains root attributed",
+			value:          "wrong",
+			wantPath:       "<root>",
+			wantConstraint: "type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diagnoseValidationMismatch(compiled, tt.value, true)
+			if !reflect.DeepEqual(got.parameters, tt.wantParameters) || got.path != tt.wantPath || got.constraint != tt.wantConstraint {
+				t.Fatalf("diagnosis = %#v, want parameters=%v path=%q constraint=%q", got, tt.wantParameters, tt.wantPath, tt.wantConstraint)
+			}
+			if strings.Contains(inputValidationNotice(got), "attacker-controlled-secret") {
+				t.Fatal("validation notice reflected an undeclared client key")
+			}
+		})
+	}
+}
+
+func TestInputValidationNoticeNamesSafeParametersWithoutValidatorDetail(t *testing.T) {
+	got := inputValidationNotice(validationMismatch{
+		parameters: []string{"limit"},
+		path:       "limit",
+		constraint: "schema",
+	})
+	want := `Input validation notice: parameter "limit" did not fully match its advertised schema. The call still ran best-effort: mismatched values may have been ignored or replaced with defaults. Adjust the flagged parameter(s) and re-call if the results look off.`
+	if got != want {
+		t.Fatalf("notice = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(got, inputValidationNoticePrefix) {
+		t.Fatalf("notice does not use inputValidationNoticePrefix: %q", got)
+	}
+}
 
 func TestNormalizeRawSchemaReplacesSchemaTrueWithEmptyObject(t *testing.T) {
 	raw := json.RawMessage(`{
@@ -62,13 +190,18 @@ func TestWriteToolInputSchemasExposeSearchContext(t *testing.T) {
 	}{
 		{
 			name:       "create dashboard",
-			tool:       mcp.NewTool("signoz_create_dashboard", mcp.WithInputSchema[types.CreateDashboardInput]()),
-			wantFields: []string{"title", "layout", "widgets", "searchContext"},
+			tool:       mcp.NewTool("signoz_create_dashboard", rawInputSchema(createDashboardSchema)),
+			wantFields: []string{"schemaVersion", "spec", "tags", "searchContext"},
 		},
 		{
 			name:       "update dashboard",
-			tool:       mcp.NewTool("signoz_update_dashboard", mcp.WithInputSchema[types.UpdateDashboardInput]()),
-			wantFields: []string{"uuid", "dashboard", "searchContext"},
+			tool:       mcp.NewTool("signoz_update_dashboard", rawInputSchema(updateDashboardSchema)),
+			wantFields: []string{"id", "schemaVersion", "spec", "searchContext"},
+		},
+		{
+			name:       "patch dashboard",
+			tool:       mcp.NewTool("signoz_patch_dashboard", rawInputSchema(patchDashboardSchema)),
+			wantFields: []string{"id", "patch", "searchContext"},
 		},
 		{
 			name:       "create alert",
@@ -78,7 +211,7 @@ func TestWriteToolInputSchemasExposeSearchContext(t *testing.T) {
 		{
 			name:       "update alert",
 			tool:       mcp.NewTool("signoz_update_alert", mcp.WithInputSchema[types.UpdateAlertInput]()),
-			wantFields: []string{"ruleId", "alert", "alertType", "ruleType", "condition", "searchContext"},
+			wantFields: []string{"id", "alert", "alertType", "ruleType", "condition", "searchContext"},
 		},
 	}
 
@@ -163,4 +296,235 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestTypedToolSchemasNeverEmitLiteralRequiredDescription guards
+// SigNoz/signoz-ai-assistant#359: google/jsonschema-go uses the `jsonschema`
+// tag value AS the field description, so a stray `jsonschema:"required"` would
+// surface the literal word "required" instead of authored prose. With
+// descriptions authored natively in the `jsonschema` tag, "required" must never
+// appear as a description at any depth of any typed-struct tool's input schema.
+func TestTypedToolSchemasNeverEmitLiteralRequiredDescription(t *testing.T) {
+	for _, tc := range typedToolSchemaCases(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			var descriptions []string
+			collectDescriptions(tc.schema, &descriptions)
+			if len(descriptions) == 0 {
+				t.Fatalf("no descriptions found in %s schema", tc.name)
+			}
+			for _, d := range descriptions {
+				if d == "required" {
+					t.Fatalf("%s schema emits a description of %q (a stray jsonschema:\"required\" tag); descriptions=%d", tc.name, "required", len(descriptions))
+				}
+			}
+		})
+	}
+}
+
+// TestTypedToolSchemasExposeAuthoredDescriptions verifies the descriptions
+// authored in the native `jsonschema` tags reach the schema the model sees — at
+// the top level and through nested objects, slice element schemas (items), and
+// map value schemas (additionalProperties).
+func TestTypedToolSchemasExposeAuthoredDescriptions(t *testing.T) {
+	cases := typedToolSchemaCases(t)
+	schemaByName := map[string]map[string]any{}
+	for _, tc := range cases {
+		schemaByName[tc.name] = tc.schema
+	}
+
+	type check struct {
+		tool string
+		path []string
+		want string
+	}
+	checks := []check{
+		// top-level field (promoted from the embedded AlertRule)
+		{"create alert", []string{"alert"}, "Name of the alert rule. Must be unique and descriptive."},
+		// searchContext is authored natively in the jsonschema tag too
+		{"create alert", []string{"searchContext"}, "Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses."},
+		// deep path through a slice element (queries -> items -> spec -> filter -> expression)
+		{"create alert", []string{"condition", "compositeQuery", "queries", "[]", "spec", "filter", "expression"}, "Filter expression using field operators. Example: service.name = frontend AND http.status_code >= 500. Use empty string for no filter."},
+		// direct named field on UpdateAlertInput (id is canonical; ruleId is a legacy alias)
+		{"update alert", []string{"id"}, "UUIDv7 of the alert rule to update (required). Obtain it from signoz_list_alert_rules or signoz_get_alert."},
+	}
+
+	for _, c := range checks {
+		t.Run(c.tool+":"+joinPath(c.path), func(t *testing.T) {
+			schema, ok := schemaByName[c.tool]
+			if !ok {
+				t.Fatalf("no schema for tool %q", c.tool)
+			}
+			node := descend(t, schema, c.path...)
+			got, _ := node["description"].(string)
+			if got != c.want {
+				t.Fatalf("description at %v = %q, want %q", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+// TestTypedToolSchemasDescriptionCoverage guards against a *silent* loss of
+// field descriptions (a tag-dialect regression, a botched edit, or an upstream
+// generator change): each typed tool's schema must expose at least the number
+// of descriptions it has today. Adding described fields only raises the count;
+// dropping any drops below the floor and fails here. This closes the gap that
+// the "never emit a 'required' description" guards leave open — descriptions
+// vanishing entirely rather than turning into the word "required".
+func TestTypedToolSchemasDescriptionCoverage(t *testing.T) {
+	floors := map[string]int{
+		"create alert": 89,
+		"update alert": 90,
+	}
+	for _, tc := range typedToolSchemaCases(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			var descriptions []string
+			collectDescriptions(tc.schema, &descriptions)
+			if floor := floors[tc.name]; len(descriptions) < floor {
+				t.Fatalf("%s exposes %d field descriptions, want >= %d (were descriptions silently dropped?)", tc.name, len(descriptions), floor)
+			}
+		})
+	}
+}
+
+type typedToolSchemaCase struct {
+	name   string
+	schema map[string]any
+}
+
+// typedToolSchemaCases builds each typed-struct tool's input schema the same way
+// registration does (mcp.WithInputSchema -> normalizeToolSchemas) and parses it.
+// Descriptions come natively from the `jsonschema` struct tags.
+func typedToolSchemaCases(t *testing.T) []typedToolSchemaCase {
+	t.Helper()
+	return []typedToolSchemaCase{
+		{"create alert", normalizedInputSchema(t, mcp.NewTool("signoz_create_alert", mcp.WithInputSchema[types.CreateAlertInput]()))},
+		{"update alert", normalizedInputSchema(t, mcp.NewTool("signoz_update_alert", mcp.WithInputSchema[types.UpdateAlertInput]()))},
+		// Dashboards are no longer typed-struct tools — they use embedded raw JSON
+		// Schemas (v2/Perses). Their schema is covered by TestWriteToolInputSchemasExposeSearchContext
+		// and TestUpdateStructs_IDNotSchemaRequired instead.
+	}
+}
+
+func normalizedInputSchema(t *testing.T, tool mcp.Tool) map[string]any {
+	t.Helper()
+	normalizeToolSchemas(&tool)
+	var schema map[string]any
+	if err := json.Unmarshal(inputSchemaJSON(tool), &schema); err != nil {
+		t.Fatalf("unmarshal input schema: %v", err)
+	}
+	return schema
+}
+
+// descend walks an object schema node. A step of "[]" descends into "items",
+// "{}" into "additionalProperties", and any other step into properties[step].
+func descend(t *testing.T, node map[string]any, steps ...string) map[string]any {
+	t.Helper()
+	cur := node
+	for i, step := range steps {
+		var next any
+		switch step {
+		case "[]":
+			next = cur["items"]
+		case "{}":
+			next = cur["additionalProperties"]
+		default:
+			props, _ := cur["properties"].(map[string]any)
+			next = props[step]
+		}
+		m, ok := next.(map[string]any)
+		if !ok {
+			t.Fatalf("descend step %d (%q) in %v: not an object node (got %T)", i, step, steps, next)
+		}
+		cur = m
+	}
+	return cur
+}
+
+// collectDescriptions gathers every "description" string anywhere in the schema.
+func collectDescriptions(node any, out *[]string) {
+	switch v := node.(type) {
+	case map[string]any:
+		if d, ok := v["description"].(string); ok {
+			*out = append(*out, d)
+		}
+		for _, val := range v {
+			collectDescriptions(val, out)
+		}
+	case []any:
+		for _, val := range v {
+			collectDescriptions(val, out)
+		}
+	}
+}
+
+func joinPath(steps []string) string {
+	out := ""
+	for i, s := range steps {
+		if i > 0 {
+			out += "."
+		}
+		out += s
+	}
+	return out
+}
+
+// TestNumericParamsAdvertiseIntegerStringUnion pins the schema-honesty fix:
+// limit/offset/stepInterval are registered with mcp.WithString but their parsers
+// (paginate.ParseParams[Clamped], intArg/parseLimit, parseStepInterval) ALSO
+// accept a JSON number, so a schema-validating client sending {"limit": 50}
+// (a JSON number — the natural form) must not be rejected before the handler
+// runs. intOrStringType() overrides the advertised type to the union
+// ["integer","string"]; this test asserts a representative sample of tools
+// advertise BOTH on each numeric param. It reuses registeredToolProps (defined
+// in param_schema_test.go), which builds the schema exactly as advertised.
+func TestNumericParamsAdvertiseIntegerStringUnion(t *testing.T) {
+	cases := []struct {
+		tool  string
+		param string
+	}{
+		{"signoz_search_logs", "limit"},
+		{"signoz_search_logs", "offset"},
+		{"signoz_query_metrics", "stepInterval"},
+		{"signoz_list_services", "limit"},
+		{"signoz_list_views", "limit"},
+		{"signoz_list_views", "offset"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tool+"/"+tc.param, func(t *testing.T) {
+			props := registeredToolProps(t, tc.tool)
+			gotType := propTypeUnion(t, props, tc.param)
+			if !containsString(gotType, "integer") || !containsString(gotType, "string") {
+				t.Fatalf("%s.%s type = %v, want a union containing both \"integer\" and \"string\"", tc.tool, tc.param, gotType)
+			}
+		})
+	}
+}
+
+// propTypeUnion returns the JSON-Schema "type" of a property as a string slice,
+// accepting either a single string ("string") or a type array
+// (["integer","string"]). It fails if the property is absent or carries no type.
+func propTypeUnion(t *testing.T, props map[string]any, name string) []string {
+	t.Helper()
+	prop, ok := props[name].(map[string]any)
+	if !ok {
+		t.Fatalf("property %q = %#v, want object", name, props[name])
+	}
+	switch v := prop["type"].(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				t.Fatalf("type entry %#v on %q is not a string", e, name)
+			}
+			out = append(out, s)
+		}
+		return out
+	default:
+		t.Fatalf("property %q has no usable type: %#v", name, prop["type"])
+		return nil
+	}
 }

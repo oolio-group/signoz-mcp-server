@@ -4,27 +4,41 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/SigNoz/signoz-mcp-server/internal/testutil/oteltest"
 	logpkg "github.com/SigNoz/signoz-mcp-server/pkg/log"
+	otelpkg "github.com/SigNoz/signoz-mcp-server/pkg/otel"
+	"github.com/SigNoz/signoz-mcp-server/pkg/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/SigNoz/signoz-mcp-server/pkg/types"
+	"github.com/SigNoz/signoz-mcp-server/pkg/version"
 )
 
 func newBufferedLogger(buf *bytes.Buffer, level slog.Level) *slog.Logger {
 	base := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: level})
 	return slog.New(logpkg.NewContextHandler(base))
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestGetAlertByRuleID(t *testing.T) {
@@ -135,6 +149,7 @@ func TestListAlertRules(t *testing.T) {
 		assert.Equal(t, "", r.URL.RawQuery)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
+		assert.Equal(t, version.UserAgent(), r.Header.Get("User-Agent"))
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"success","data":[{"id":"rule-1","alert":"High CPU","state":"inactive"}]}`))
@@ -149,91 +164,101 @@ func TestListAlertRules(t *testing.T) {
 	assert.Contains(t, string(result), `"id":"rule-1"`)
 }
 
+// expiredWorkspaceHTML mirrors the 404 page the SigNoz Cloud ingress serves
+// for expired/deactivated workspaces (captured from production logs).
+const expiredWorkspaceHTML = `<!DOCTYPE html>
+<html>
+<head><title>404 : This page does not exist :/</title></head>
+<body><p>Either the workspace has expired or the workspace does not exist.</p></body>
+</html>`
+
 func TestValidateCredentials(t *testing.T) {
 	tests := []struct {
-		name            string
-		userMeStatus    int // status for /api/v1/user/me (always hit first)
-		saStatus        int // status for /api/v1/service_accounts/me (only hit on user/me 502)
-		expectedError   bool
-		checkErr        func(t *testing.T, err error)
-		expectUserMeHit bool
-		expectSAHit     bool
+		name          string
+		saStatus      int    // status for /api/v1/service_accounts/me
+		saBody        string // body for service_accounts/me; defaults to JSON
+		expectedError bool
+		checkErr      func(t *testing.T, err error)
 	}{
 		{
-			name:            "user/me succeeds (legacy user-level key)",
-			userMeStatus:    http.StatusOK,
-			expectedError:   false,
-			expectUserMeHit: true,
-			expectSAHit:     false,
+			name:          "service_accounts/me succeeds",
+			saStatus:      http.StatusOK,
+			expectedError: false,
 		},
 		{
-			name:            "user/me unauthorized returns error directly",
-			userMeStatus:    http.StatusUnauthorized,
-			expectedError:   true,
-			expectUserMeHit: true,
-			expectSAHit:     false,
+			name:          "service_accounts/me unauthorized",
+			saStatus:      http.StatusUnauthorized,
+			expectedError: true,
 			checkErr: func(t *testing.T, err error) {
 				assert.ErrorIs(t, err, ErrUnauthorized)
 			},
 		},
 		{
-			name:            "user/me 404 falls back to service_accounts/me success",
-			userMeStatus:    http.StatusNotFound,
-			saStatus:        http.StatusOK,
-			expectedError:   false,
-			expectUserMeHit: true,
-			expectSAHit:     true,
-		},
-		{
-			name:            "user/me 404 falls back to service_accounts/me unauthorized",
-			userMeStatus:    http.StatusNotFound,
-			saStatus:        http.StatusUnauthorized,
-			expectedError:   true,
-			expectUserMeHit: true,
-			expectSAHit:     true,
+			name:          "service_accounts/me forbidden",
+			saStatus:      http.StatusForbidden,
+			expectedError: true,
 			checkErr: func(t *testing.T, err error) {
 				assert.ErrorIs(t, err, ErrUnauthorized)
 			},
 		},
 		{
-			name:            "user/me 500 returns error directly without fallback",
-			userMeStatus:    http.StatusInternalServerError,
-			expectedError:   true,
-			expectUserMeHit: true,
-			expectSAHit:     false,
+			name:          "service_accounts/me 500 is an unexpected status",
+			saStatus:      http.StatusInternalServerError,
+			expectedError: true,
 			checkErr: func(t *testing.T, err error) {
 				assert.Contains(t, err.Error(), "unexpected status 500")
+			},
+		},
+		{
+			name:          "HTML 404 means no SigNoz API at the instance URL",
+			saStatus:      http.StatusNotFound,
+			saBody:        expiredWorkspaceHTML,
+			expectedError: true,
+			checkErr: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, ErrInstanceNotFound)
+			},
+		},
+		{
+			name:          "JSON 404 stays a generic unexpected status",
+			saStatus:      http.StatusNotFound,
+			expectedError: true,
+			checkErr: func(t *testing.T, err error) {
+				assert.NotErrorIs(t, err, ErrInstanceNotFound)
+				assert.Contains(t, err.Error(), "unexpected status 404")
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			userMeRequests := 0
 			saRequests := 0
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
+				assert.Equal(t, "custom-client/1.0 "+version.UserAgent(), r.Header.Get("User-Agent"))
 				assert.Equal(t, http.MethodGet, r.Method)
 
-				switch r.URL.Path {
-				case "/api/v1/user/me":
-					userMeRequests++
-					w.WriteHeader(tt.userMeStatus)
-				case "/api/v1/service_accounts/me":
-					saRequests++
-					w.WriteHeader(tt.saStatus)
-				default:
-					t.Fatalf("unexpected path %s", r.URL.Path)
+				if r.URL.Path != "/api/v1/service_accounts/me" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
 				}
 
-				_, _ = w.Write([]byte(`{"status":"ok"}`))
+				saRequests++
+				body := `{"status":"ok"}`
+				if tt.saBody != "" {
+					body = tt.saBody
+				}
+				w.WriteHeader(tt.saStatus)
+				_, _ = w.Write([]byte(body))
 			}))
 			defer server.Close()
 
 			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
+			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", map[string]string{
+				"User-Agent": "custom-client/1.0",
+			}, "")
 
 			err := client.ValidateCredentials(context.Background())
 
@@ -246,16 +271,55 @@ func TestValidateCredentials(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			if tt.expectUserMeHit {
-				assert.Equal(t, 1, userMeRequests, "expected user/me to be called")
-			} else {
-				assert.Equal(t, 0, userMeRequests, "expected user/me NOT to be called")
-			}
-			if tt.expectSAHit {
-				assert.Equal(t, 1, saRequests, "expected service_accounts/me to be called")
-			} else {
-				assert.Equal(t, 0, saRequests, "expected service_accounts/me NOT to be called")
-			}
+			assert.Equal(t, 1, saRequests, "expected exactly one service_accounts/me call")
+		})
+	}
+}
+
+func TestEvaluateValidationResponse_DoesNotLogOrReturnRawBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		checkError func(*testing.T, error)
+	}{
+		{
+			name:   "HTML 404 keeps instance-not-found classification",
+			status: http.StatusNotFound,
+			body:   "<html>SIGNOZ_API_KEY=validation-secret-canary</html>",
+			checkError: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, ErrInstanceNotFound)
+			},
+		},
+		{
+			name:   "generic status uses body-free fallback",
+			status: http.StatusInternalServerError,
+			body:   `{"status":"error","message":"SIGNOZ_API_KEY=validation-secret-canary"}`,
+			checkError: func(t *testing.T, err error) {
+				assert.Equal(t, "unexpected status 500", err.Error())
+				var statusErr *HTTPStatusError
+				assert.False(t, errors.As(err, &statusErr), "credential validation keeps its plain error contract")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			client := NewClient(newBufferedLogger(&logBuf, slog.LevelWarn), "https://example.test", "key", SignozApiKey, nil, "")
+
+			err := client.evaluateValidationResponse(context.Background(), tc.status, []byte(tc.body))
+			require.Error(t, err)
+			tc.checkError(t, err)
+			assert.NotContains(t, err.Error(), "validation-secret-canary")
+			assert.NotContains(t, logBuf.String(), "validation-secret-canary")
+
+			lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+			require.Len(t, lines, 1)
+			var record map[string]any
+			require.NoError(t, json.Unmarshal([]byte(lines[0]), &record))
+			assert.NotContains(t, record, "response")
+			assert.Equal(t, float64(len(tc.body)), record["response.body.size_bytes"])
 		})
 	}
 }
@@ -390,14 +454,32 @@ func TestGetAnalyticsIdentity_CachesResult(t *testing.T) {
 
 	logger := logpkg.New("debug")
 	client := NewClient(logger, server.URL, "Bearer jwt", "Authorization", nil, "")
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = meterProvider.Shutdown(context.Background()) })
+	meters, err := otelpkg.NewMeters(meterProvider)
+	require.NoError(t, err)
+	client.SetMeters(meters)
+	ctx := util.SetClientSource(context.Background(), "ai-assistant")
 
 	for i := 0; i < 5; i++ {
-		identity, err := client.GetAnalyticsIdentity(context.Background())
+		identity, err := client.GetAnalyticsIdentity(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, "user-1", identity.UserID)
 	}
 
 	assert.Equal(t, 1, requests, "expected identity cache to serve repeated lookups")
+
+	var collected metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &collected))
+	for _, metricName := range []string{"mcp.identity_cache.hit", "mcp.identity_cache.miss"} {
+		sum, found := oteltest.FindInt64SumMetric(collected, metricName)
+		require.True(t, found, "%s metric not found", metricName)
+		require.Len(t, sum.DataPoints, 1, "%s datapoints", metricName)
+		attr, present := sum.DataPoints[0].Attributes.Value(otelpkg.MCPClientSourceKey)
+		require.True(t, present, "%s missing mcp.client_source", metricName)
+		assert.Equal(t, "ai-assistant", attr.AsString(), "%s mcp.client_source", metricName)
+	}
 }
 
 func TestGetAnalyticsIdentity_ConcurrentCallsDedupe(t *testing.T) {
@@ -434,7 +516,7 @@ func TestDoRequest_RetryLogsDebugThenWarn(t *testing.T) {
 	var logBuf bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"status":"error","message":"temporary outage"}`))
+		_, _ = w.Write([]byte(`{"status":"error","error":{"code":"unavailable","message":"authorization: auth123temporary-secret-canary"}}`))
 	}))
 	defer server.Close()
 
@@ -447,6 +529,7 @@ func TestDoRequest_RetryLogsDebugThenWarn(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
 	var sawRetryDebug bool
 	var sawTerminalWarn bool
+	var driftWarnings int
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -457,17 +540,28 @@ func TestDoRequest_RetryLogsDebugThenWarn(t *testing.T) {
 		switch rec["msg"] {
 		case "Retryable status, will retry":
 			assert.Equal(t, "DEBUG", rec["level"])
+			assert.NotContains(t, rec, "response")
+			assert.NotZero(t, rec["response.body.size_bytes"])
 			sawRetryDebug = true
 		case "SigNoz request returned unexpected status":
 			assert.Equal(t, "WARN", rec["level"])
 			assert.Equal(t, true, rec["retryable"])
 			assert.Equal(t, true, rec["retries_exhausted"])
+			assert.NotContains(t, rec, "response")
+			assert.NotZero(t, rec["response.body.size_bytes"])
 			sawTerminalWarn = true
+		case errorEnvelopeWarning:
+			assert.NotZero(t, rec["response.body.size_bytes"])
+			assert.Equal(t, true, rec["recognized"])
+			assert.Equal(t, []any{"message"}, rec["fields"])
+			driftWarnings++
 		}
 	}
 
 	assert.True(t, sawRetryDebug, "expected intermediate retry log at DEBUG")
 	assert.True(t, sawTerminalWarn, "expected terminal retry exhaustion log at WARN")
+	assert.Equal(t, 1, driftWarnings, "shape drift must be warned once per request across retries")
+	assert.NotContains(t, logBuf.String(), "auth123temporary-secret-canary")
 }
 
 func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
@@ -476,7 +570,7 @@ func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"error","message":"temporary outage"}`))
+			_, _ = w.Write([]byte(`{"status":"error","error":{"code":"unavailable","message":"temporary-outage-canary"}} trailing`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -492,6 +586,7 @@ func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
 	var sawRetryDebug bool
+	var driftWarnings int
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -501,9 +596,14 @@ func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
 
 		switch rec["msg"] {
 		case "Retryable status, will retry":
+			assert.NotContains(t, rec, "response")
 			sawRetryDebug = true
 		case "SigNoz request returned unexpected status":
 			t.Fatalf("unexpected terminal warn log on eventual success: %v", rec)
+		case errorEnvelopeWarning:
+			assert.Equal(t, false, rec["recognized"])
+			assert.Equal(t, []any{"envelope"}, rec["fields"])
+			driftWarnings++
 		}
 		if _, ok := rec["retries_exhausted"]; ok {
 			t.Fatalf("unexpected retries_exhausted field on eventual success path: %v", rec)
@@ -511,6 +611,39 @@ func TestDoRequest_SucceedsAfterRetryWithoutRetriesExhaustedLog(t *testing.T) {
 	}
 
 	assert.True(t, sawRetryDebug, "expected intermediate retry log before success")
+	assert.Equal(t, 1, driftWarnings, "transient shape drift must remain detectable")
+	assert.NotContains(t, logBuf.String(), "temporary-outage-canary")
+}
+
+func TestDoRequest_OversizedRendererWarnsOnceWithoutParsingValues(t *testing.T) {
+	var logBuf bytes.Buffer
+	responseBody := `{"status":"error","requestId":"req-1","error":{"code":"invalid_input","message":"oversized-secret-canary` +
+		strings.Repeat("x", maxErrorEnvelopeBytes) + `"}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	defer server.Close()
+
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelDebug), server.URL, "test-api-key", SignozApiKey, nil, "")
+	_, err := client.doRequest(context.Background(), http.MethodGet, server.URL, nil, time.Second)
+	require.Error(t, err)
+	assert.Equal(t, "unexpected status 503", err.Error())
+	assert.NotContains(t, logBuf.String(), "oversized-secret-canary")
+
+	warnings := 0
+	for _, line := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
+		var record map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		if record["msg"] != errorEnvelopeWarning {
+			continue
+		}
+		warnings++
+		assert.Equal(t, false, record["recognized"])
+		assert.Equal(t, []any{"envelope"}, record["fields"])
+		assert.Equal(t, float64(len(responseBody)), record["response.body.size_bytes"])
+	}
+	assert.Equal(t, 1, warnings, "oversized renderer drift must be warned once across retries")
 }
 
 func TestDoRequest_NonRetryableStatusOmitsRetriesExhausted(t *testing.T) {
@@ -553,6 +686,111 @@ func TestDoRequest_NonRetryableStatusOmitsRetriesExhausted(t *testing.T) {
 
 	assert.False(t, sawRetryDebug, "did not expect retry log for non-retryable status")
 	assert.True(t, sawTerminalWarn, "expected terminal non-retryable warning log")
+}
+
+func TestDoRequest_NonRetryableStatusReturnsHTTPStatusError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"status":"error","error":{"type":"forbidden","code":"authz_forbidden","message":"only editors/admins can access this resource"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(logpkg.New("error"), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
+
+	_, err := client.doRequest(context.Background(), http.MethodPost, server.URL, []byte(`{}`), time.Second)
+	require.Error(t, err)
+
+	var statusErr *HTTPStatusError
+	require.True(t, errors.As(err, &statusErr), "expected HTTPStatusError, got %T: %v", err, err)
+	assert.Equal(t, http.StatusForbidden, statusErr.StatusCode)
+	assert.Contains(t, statusErr.Body, "authz_forbidden")
+	assert.Contains(t, err.Error(), "unexpected status 403")
+}
+
+func TestDoRequest_HTTPStatusErrorPreservesFullBodyForParsing(t *testing.T) {
+	var logBuf bytes.Buffer
+	longMessage := strings.Repeat("x", 5000) + "tail"
+	responseBody, err := json.Marshal(map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"type":    "forbidden",
+			"code":    "forbidden",
+			"message": longMessage,
+		},
+	})
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(responseBody)
+	}))
+	defer server.Close()
+
+	client := NewClient(newBufferedLogger(&logBuf, slog.LevelWarn), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
+
+	_, err = client.doRequest(context.Background(), http.MethodPost, server.URL, []byte(`{}`), time.Second)
+	require.Error(t, err)
+
+	var statusErr *HTTPStatusError
+	require.True(t, errors.As(err, &statusErr), "expected HTTPStatusError, got %T: %v", err, err)
+	assert.Equal(t, http.StatusForbidden, statusErr.StatusCode)
+	assert.True(t, json.Valid([]byte(statusErr.Body)), "stored body should remain parseable JSON")
+	assert.Contains(t, statusErr.Body, longMessage)
+	assert.Contains(t, err.Error(), "...(truncated)")
+	assert.NotContains(t, err.Error(), "tail")
+
+	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	require.NotEmpty(t, lines)
+	var rec map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &rec))
+	assert.Equal(t, "SigNoz request returned unexpected status", rec["msg"])
+	assert.NotContains(t, rec, "response")
+	assert.NotContains(t, logBuf.String(), longMessage)
+	assert.NotContains(t, logBuf.String(), "tail")
+}
+
+func TestHTTPStatusError_UnrecognizedBodyUsesStatusFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       string
+	}{
+		{name: "unauthorized plain text", statusCode: http.StatusUnauthorized, body: "expired secret-canary", want: "unexpected status 401: authentication failed"},
+		{name: "unauthorized malformed JSON", statusCode: http.StatusUnauthorized, body: `{"token":"secret-canary"`, want: "unexpected status 401: authentication failed"},
+		{name: "unauthorized JSON string", statusCode: http.StatusUnauthorized, body: `"secret-canary"`, want: "unexpected status 401: authentication failed"},
+		{name: "unauthorized JSON null", statusCode: http.StatusUnauthorized, body: `null`, want: "unexpected status 401: authentication failed"},
+		{name: "forbidden HTML", statusCode: http.StatusForbidden, body: "<html>secret-canary</html>", want: "unexpected status 403: permission denied"},
+		{name: "forbidden JSON array", statusCode: http.StatusForbidden, body: `["secret-canary"]`, want: "unexpected status 403: permission denied"},
+		{name: "forbidden empty", statusCode: http.StatusForbidden, body: "", want: "unexpected status 403: permission denied"},
+		{name: "bad request HTML", statusCode: http.StatusBadRequest, body: "<html>secret-canary</html>", want: "unexpected status 400"},
+		{name: "internal proxy JSON", statusCode: http.StatusInternalServerError, body: `{"status":"error","message":"secret-canary"}`, want: "unexpected status 500"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &HTTPStatusError{StatusCode: tt.statusCode, Body: tt.body}
+			assert.Equal(t, tt.want, err.Error())
+			assert.NotContains(t, err.Error(), "secret-canary")
+			assert.Equal(t, tt.body, err.Body, "raw body remains available to the recognized-envelope parser")
+		})
+	}
+}
+
+func TestHTTPStatusError_RecognizedBodyUsesSafeGuidance(t *testing.T) {
+	err := &HTTPStatusError{
+		StatusCode: http.StatusBadRequest,
+		Body: `{"status":"error","error":{"type":"invalid-input","code":"invalid_input","message":"bad query",` +
+			`"url":"https://signoz.io/docs/search","suggestions":["narrow the query"],` +
+			`"errors":[{"message":"bad field","suggestions":["use an existing field"]}],"retry":{"delay":1000000000}}}`,
+	}
+
+	got := err.Error()
+	assert.Contains(t, got, "unexpected status 400: bad query (bad field)")
+	assert.Contains(t, got, "Documentation: https://signoz.io/docs/search")
+	assert.Contains(t, got, "Suggestions: narrow the query")
+	assert.Contains(t, got, "Suggestions for \"bad field\": use an existing field")
+	assert.Contains(t, got, "Retry delay: 1s (1000000000 ns)")
 }
 
 func TestListMetricKeys(t *testing.T) {
@@ -635,132 +873,6 @@ func TestListMetricKeys(t *testing.T) {
 					for i, expectedKey := range tt.expectedData {
 						if i < len(data) {
 							assert.Equal(t, expectedKey, data[i])
-						}
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestListDashboards(t *testing.T) {
-	tests := []struct {
-		name          string
-		resp          map[string]interface{}
-		statusCode    int
-		expectedError bool
-		expectedData  []map[string]interface{}
-	}{
-		{
-			name: "successful dashboards retrieval",
-			resp: map[string]interface{}{
-				"status": "success",
-				"data": []map[string]interface{}{
-					{
-						"id": "dashboard-uuid-1",
-						"data": map[string]interface{}{
-							"title":       "Apple Dashboard",
-							"description": "Apple monitoring",
-							"tags":        []string{"system", "monitoring"},
-						},
-						"createdAt": "2024-01-01T00:00:00Z",
-						"updatedAt": "2024-01-01T00:00:00Z",
-					},
-					{
-						"id": "dashboard-uuid-2",
-						"data": map[string]interface{}{
-							"title":       "Orange Dashboard",
-							"description": "Orange monitoring",
-							"tags":        []string{"app", "performance"},
-						},
-						"createdAt": "2024-01-02T00:00:00Z",
-						"updatedAt": "2024-01-02T00:00:00Z",
-					},
-				},
-			},
-			statusCode:    http.StatusOK,
-			expectedError: false,
-			expectedData: []map[string]interface{}{
-				{
-					"uuid":        "dashboard-uuid-1",
-					"name":        "Apple Dashboard",
-					"description": "Apple monitoring",
-					"tags":        []string{"system", "monitoring"},
-					"createdAt":   "2024-01-01T00:00:00Z",
-					"updatedAt":   "2024-01-01T00:00:00Z",
-				},
-				{
-					"uuid":        "dashboard-uuid-2",
-					"name":        "Orange Dashboard",
-					"description": "Orange monitoring",
-					"tags":        []string{"app", "performance"},
-					"createdAt":   "2024-01-02T00:00:00Z",
-					"updatedAt":   "2024-01-02T00:00:00Z",
-				},
-			},
-		},
-		{
-			name:          "server error",
-			resp:          map[string]interface{}{"status": "error", "message": "Internal server error"},
-			statusCode:    http.StatusInternalServerError,
-			expectedError: true,
-		},
-		{
-			name:          "unauthorized",
-			resp:          map[string]interface{}{"status": "error", "message": "Unauthorized"},
-			statusCode:    http.StatusUnauthorized,
-			expectedError: true,
-		},
-		{
-			name:          "empty response",
-			resp:          map[string]interface{}{"status": "success", "data": []map[string]interface{}{}},
-			statusCode:    http.StatusOK,
-			expectedError: false,
-			expectedData:  []map[string]interface{}{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, http.MethodGet, r.Method)
-				assert.Equal(t, "/api/v1/dashboards", r.URL.Path)
-
-				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-				assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
-
-				w.WriteHeader(tt.statusCode)
-				responseBody, _ := json.Marshal(tt.resp)
-				_, _ = w.Write(responseBody)
-			}))
-			defer server.Close()
-
-			logger := logpkg.New("debug")
-			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
-
-			ctx := context.Background()
-			result, err := client.ListDashboards(ctx)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-				assert.Nil(t, result)
-			} else {
-
-				var response map[string]interface{}
-				err = json.Unmarshal(result, &response)
-				require.NoError(t, err)
-
-				assert.Equal(t, "success", response["status"])
-
-				if data, ok := response["data"].([]interface{}); ok {
-					assert.Equal(t, len(tt.expectedData), len(data))
-					for i, expectedDashboard := range tt.expectedData {
-						if i < len(data) {
-							if dashboard, ok := data[i].(map[string]interface{}); ok {
-								assert.Equal(t, expectedDashboard["uuid"], dashboard["uuid"])
-								assert.Equal(t, expectedDashboard["name"], dashboard["name"])
-								assert.Equal(t, expectedDashboard["description"], dashboard["description"])
-							}
 						}
 					}
 				}
@@ -906,83 +1018,66 @@ func TestGetAlertHistory(t *testing.T) {
 		resp          map[string]interface{}
 		statusCode    int
 		expectedError bool
-		expectedData  []map[string]interface{}
+		expectedItems int
 	}{
 		{
-			name:   "successful alert history retrieval",
+			name:   "successful alert history retrieval with state and filter",
 			ruleID: "ruleid-abc",
 			request: types.AlertHistoryRequest{
-				Start:  1640995200000,
-				End:    1641081600000,
-				Offset: 0,
-				Limit:  20,
-				Order:  "desc",
-				Filters: types.AlertHistoryFilters{
-					Items: []interface{}{},
-					Op:    "AND",
-				},
+				Start:            1640995200000,
+				End:              1641081600000,
+				State:            "firing",
+				FilterExpression: "severity = 'warning'",
+				Limit:            20,
+				Order:            "desc",
 			},
 			resp: map[string]interface{}{
 				"status": "success",
-				"data": []map[string]interface{}{
-					{
-						"timestamp": "2022-01-01T10:00:00Z",
-						"state":     "firing",
-						"value":     85.5,
-						"labels": map[string]interface{}{
-							"service":  "frontend",
-							"severity": "warning",
-						},
+				"data": map[string]interface{}{
+					"items": []map[string]interface{}{
+						{"ruleId": "ruleid-abc", "state": "firing", "value": 85.5, "unixMilli": 1640995200000},
+						{"ruleId": "ruleid-abc", "state": "inactive", "value": 45.2, "unixMilli": 1640998800000},
 					},
-					{
-						"timestamp": "2022-01-01T11:00:00Z",
-						"state":     "resolved",
-						"value":     45.2,
-						"labels": map[string]interface{}{
-							"service":  "frontend",
-							"severity": "warning",
-						},
-					},
+					"total":      2,
+					"nextCursor": "",
 				},
 			},
 			statusCode:    http.StatusOK,
 			expectedError: false,
-			expectedData: []map[string]interface{}{
-				{
-					"timestamp": "2022-01-01T10:00:00Z",
-					"state":     "firing",
-					"value":     85.5,
-					"labels": map[string]interface{}{
-						"service":  "frontend",
-						"severity": "warning",
-					},
-				},
-				{
-					"timestamp": "2022-01-01T11:00:00Z",
-					"state":     "resolved",
-					"value":     45.2,
-					"labels": map[string]interface{}{
-						"service":  "frontend",
-						"severity": "warning",
-					},
+			expectedItems: 2,
+		},
+		{
+			name:   "cursor paginated request",
+			ruleID: "ruleid-abc",
+			request: types.AlertHistoryRequest{
+				Start:  1640995200000,
+				End:    1641081600000,
+				Limit:  20,
+				Order:  "desc",
+				Cursor: "eyJvZmZzZXQiOjIwLCJsaW1pdCI6MjB9",
+			},
+			resp: map[string]interface{}{
+				"status": "success",
+				"data": map[string]interface{}{
+					"items":      []map[string]interface{}{},
+					"total":      20,
+					"nextCursor": "",
 				},
 			},
+			statusCode:    http.StatusOK,
+			expectedError: false,
+			expectedItems: 0,
 		},
 		{
 			name:   "server error",
 			ruleID: "ruleid-abc",
 			request: types.AlertHistoryRequest{
-				Start:  1640995200000,
-				End:    1641081600000,
-				Offset: 0,
-				Limit:  20,
-				Order:  "desc",
-				Filters: types.AlertHistoryFilters{
-					Items: []interface{}{},
-					Op:    "AND",
-				},
+				Start: 1640995200000,
+				End:   1641081600000,
+				Limit: 20,
+				Order: "desc",
 			},
-			resp:          map[string]interface{}{"status": "error", "message": "Internal server error"},
+			resp:          map[string]interface{}{"status": "error", "error": map[string]interface{}{"message": "Internal server error"}},
 			statusCode:    http.StatusInternalServerError,
 			expectedError: true,
 		},
@@ -990,17 +1085,12 @@ func TestGetAlertHistory(t *testing.T) {
 			name:   "rule not found",
 			ruleID: "non-existent-rule",
 			request: types.AlertHistoryRequest{
-				Start:  1640995200000,
-				End:    1641081600000,
-				Offset: 0,
-				Limit:  20,
-				Order:  "desc",
-				Filters: types.AlertHistoryFilters{
-					Items: []interface{}{},
-					Op:    "AND",
-				},
+				Start: 1640995200000,
+				End:   1641081600000,
+				Limit: 20,
+				Order: "desc",
 			},
-			resp:          map[string]interface{}{"status": "error", "message": "Rule not found"},
+			resp:          map[string]interface{}{"status": "error", "error": map[string]interface{}{"message": "Rule not found"}},
 			statusCode:    http.StatusNotFound,
 			expectedError: true,
 		},
@@ -1008,41 +1098,36 @@ func TestGetAlertHistory(t *testing.T) {
 			name:   "empty response",
 			ruleID: "ruleid-abc",
 			request: types.AlertHistoryRequest{
-				Start:  1640995200000,
-				End:    1641081600000,
-				Offset: 0,
-				Limit:  20,
-				Order:  "desc",
-				Filters: types.AlertHistoryFilters{
-					Items: []interface{}{},
-					Op:    "AND",
-				},
+				Start: 1640995200000,
+				End:   1641081600000,
+				Limit: 20,
+				Order: "desc",
 			},
-			resp:          map[string]interface{}{"status": "success", "data": []map[string]interface{}{}},
+			resp:          map[string]interface{}{"status": "success", "data": map[string]interface{}{"items": []map[string]interface{}{}, "total": 0}},
 			statusCode:    http.StatusOK,
 			expectedError: false,
-			expectedData:  []map[string]interface{}{},
+			expectedItems: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, http.MethodPost, r.Method)
-				expectedPath := fmt.Sprintf("/api/v1/rules/%s/history/timeline", tt.ruleID)
+				// v2 timeline is a GET; params ride on the query string, not a body.
+				assert.Equal(t, http.MethodGet, r.Method)
+				expectedPath := fmt.Sprintf("/api/v2/rules/%s/history/timeline", tt.ruleID)
 				assert.Equal(t, expectedPath, r.URL.Path)
-
-				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
 
-				var requestBody types.AlertHistoryRequest
-				err := json.NewDecoder(r.Body).Decode(&requestBody)
-				require.NoError(t, err)
-				assert.Equal(t, tt.request.Start, requestBody.Start)
-				assert.Equal(t, tt.request.End, requestBody.End)
-				assert.Equal(t, tt.request.Offset, requestBody.Offset)
-				assert.Equal(t, tt.request.Limit, requestBody.Limit)
-				assert.Equal(t, tt.request.Order, requestBody.Order)
+				q := r.URL.Query()
+				assert.Equal(t, fmt.Sprintf("%d", tt.request.Start), q.Get("start"))
+				assert.Equal(t, fmt.Sprintf("%d", tt.request.End), q.Get("end"))
+				assert.Equal(t, fmt.Sprintf("%d", tt.request.Limit), q.Get("limit"))
+				assert.Equal(t, tt.request.Order, q.Get("order"))
+				// Optional params are omitted when empty (server applies defaults).
+				assert.Equal(t, tt.request.State, q.Get("state"))
+				assert.Equal(t, tt.request.FilterExpression, q.Get("filterExpression"))
+				assert.Equal(t, tt.request.Cursor, q.Get("cursor"))
 
 				w.WriteHeader(tt.statusCode)
 				responseBody, _ := json.Marshal(tt.resp)
@@ -1065,23 +1150,10 @@ func TestGetAlertHistory(t *testing.T) {
 				require.NoError(t, err)
 
 				assert.Equal(t, "success", response["status"])
-				if data, ok := response["data"].([]interface{}); ok {
-					assert.Equal(t, len(tt.expectedData), len(data))
-					for i, expectedHistory := range tt.expectedData {
-						if i < len(data) {
-							if history, ok := data[i].(map[string]interface{}); ok {
-								assert.Equal(t, expectedHistory["timestamp"], history["timestamp"])
-								assert.Equal(t, expectedHistory["state"], history["state"])
-								assert.Equal(t, expectedHistory["value"], history["value"])
-								if labels, ok := history["labels"].(map[string]interface{}); ok {
-									expectedLabels := expectedHistory["labels"].(map[string]interface{})
-									assert.Equal(t, expectedLabels["service"], labels["service"])
-									assert.Equal(t, expectedLabels["severity"], labels["severity"])
-								}
-							}
-						}
-					}
-				}
+				data, ok := response["data"].(map[string]interface{})
+				require.True(t, ok, "expected v2 data object with items[]")
+				items, _ := data["items"].([]interface{})
+				assert.Equal(t, tt.expectedItems, len(items))
 			}
 		})
 	}
@@ -1251,92 +1323,31 @@ func TestQueryBuilderV5(t *testing.T) {
 	}
 }
 
-func TestCreateDashboard(t *testing.T) {
+func TestGetTraceDetails_UsesCanonicalTraceIDFilter(t *testing.T) {
+	var captured []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "/api/v1/dashboards", r.URL.Path)
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
-
-		var body types.Dashboard
-		err := json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "/api/v5/query_range", r.URL.Path)
+		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
-
-		assert.NotEmpty(t, body.Title)
-		assert.NotNil(t, body.Layout)
-		assert.NotNil(t, body.Widgets)
+		captured = body
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"success","id":"dashboard-123"}`))
+		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
 	}))
 	defer server.Close()
 
 	logger := logpkg.New("debug")
 	client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
-	d := types.Dashboard{
-		Title:   "whatever",
-		Layout:  []types.LayoutItem{},
-		Widgets: []types.Widget{},
-	}
-
-	ctx := context.Background()
-	resp, err := client.CreateDashboard(ctx, d)
+	_, err := client.GetTraceDetails(context.Background(), "abc123", true, 1711123200000, 1711130400000)
 	require.NoError(t, err)
 
-	var out map[string]interface{}
-	err = json.Unmarshal(resp, &out)
-	require.NoError(t, err)
-
-	assert.Equal(t, "success", out["status"])
-	assert.Equal(t, "dashboard-123", out["id"])
-}
-
-func TestUpdateDashboard(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPut, r.Method)
-		assert.Equal(t, "/api/v1/dashboards/id-123", r.URL.Path)
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
-
-		var body types.Dashboard
-		err := json.NewDecoder(r.Body).Decode(&body)
-		require.NoError(t, err)
-
-		assert.Equal(t, "updated-title", body.Title)
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	logger := logpkg.New("debug")
-	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
-
-	d := types.Dashboard{
-		Title:   "updated-title",
-		Layout:  []types.LayoutItem{},
-		Widgets: []types.Widget{},
-	}
-
-	err := client.UpdateDashboard(context.Background(), "id-123", d)
-	require.NoError(t, err)
-}
-
-func TestDeleteDashboard(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodDelete, r.Method)
-		assert.Equal(t, "/api/v1/dashboards/dash-456", r.URL.Path)
-		assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	logger := logpkg.New("debug")
-	client := NewClient(logger, srv.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
-
-	err := client.DeleteDashboard(context.Background(), "dash-456")
-	require.NoError(t, err)
+	payload := string(captured)
+	require.Contains(t, payload, `"expression":"trace_id = 'abc123'"`)
+	require.Contains(t, payload, `"limit":1000`)
+	require.Contains(t, payload, `"order":[{"key":{"name":"timestamp"},"direction":"desc"}]`)
+	require.NotContains(t, payload, `"expression":"traceID = 'abc123'"`)
 }
 
 func TestGetFieldKeys(t *testing.T) {
@@ -1449,18 +1460,20 @@ func TestGetFieldValues(t *testing.T) {
 		fieldName     string
 		metricName    string
 		searchText    string
+		fieldContext  string
 		source        string
 		resp          map[string]interface{}
 		statusCode    int
 		expectedError bool
 	}{
 		{
-			name:       "successful retrieval with all params",
-			signal:     "metrics",
-			fieldName:  "host.name",
-			metricName: "container.cpu.usage",
-			searchText: "prod",
-			source:     "otel",
+			name:         "successful retrieval with all params",
+			signal:       "metrics",
+			fieldName:    "host.name",
+			metricName:   "container.cpu.usage",
+			searchText:   "prod",
+			fieldContext: "resource",
+			source:       "otel",
 			resp: map[string]interface{}{
 				"status": "success",
 				"data":   []string{"prod-host-1", "prod-host-2"},
@@ -1513,6 +1526,7 @@ func TestGetFieldValues(t *testing.T) {
 				assert.Equal(t, tt.fieldName, q.Get("name"))
 				assert.Equal(t, tt.metricName, q.Get("metricName"))
 				assert.Equal(t, tt.searchText, q.Get("searchText"))
+				assert.Equal(t, tt.fieldContext, q.Get("fieldContext"))
 				assert.Equal(t, tt.source, q.Get("source"))
 
 				w.WriteHeader(tt.statusCode)
@@ -1525,7 +1539,7 @@ func TestGetFieldValues(t *testing.T) {
 			client := NewClient(logger, server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
 
 			ctx := context.Background()
-			result, err := client.GetFieldValues(ctx, tt.signal, tt.fieldName, tt.metricName, tt.searchText, tt.source)
+			result, err := client.GetFieldValues(ctx, tt.signal, tt.fieldName, tt.metricName, tt.searchText, tt.fieldContext, tt.source)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -1643,6 +1657,72 @@ func TestDoRequest_RetryOn429(t *testing.T) {
 	assert.Contains(t, string(result), "success")
 }
 
+func TestGuardrail_MutatingPOSTNotRetriedAfterRetryableStatus(t *testing.T) {
+	var attempts atomic.Int32
+	var requestBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var err error
+		requestBody, err = io.ReadAll(r.Body)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"may already have committed"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(logpkg.New("error"), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
+	_, err := client.doRequest(context.Background(), http.MethodPost, server.URL, []byte(`{"name":"created-once"}`), time.Second)
+	require.Error(t, err)
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.JSONEq(t, `{"name":"created-once"}`, string(requestBody))
+}
+
+func TestGuardrail_MutatingPOSTNotRetriedAfterAmbiguousTransportFailure(t *testing.T) {
+	var attempts atomic.Int32
+	var requestBody []byte
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		var err error
+		requestBody, err = io.ReadAll(req.Body)
+		require.NoError(t, err)
+		return nil, io.ErrUnexpectedEOF
+	})
+	client := NewClient(logpkg.New("error"), "http://example.invalid", "test-api-key", "SIGNOZ-API-KEY", nil, "")
+	client.httpClient.Transport = transport
+
+	_, err := client.doRequest(context.Background(), http.MethodPost, "http://example.invalid/api/v1/dashboards", []byte(`{"title":"created-once"}`), time.Second)
+	require.Error(t, err)
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.JSONEq(t, `{"title":"created-once"}`, string(requestBody))
+}
+
+func TestGuardrail_ReadOnlyPOSTRetries(t *testing.T) {
+	var attempts atomic.Int32
+	var requestBodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestBody, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		requestBodies = append(requestBodies, requestBody)
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"result":[]}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(logpkg.New("error"), server.URL, "test-api-key", "SIGNOZ-API-KEY", nil, "")
+	result, err := client.QueryBuilderV5(context.Background(), []byte(`{"schemaVersion":"v1"}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"data":{"result":[]}}`, string(result))
+	assert.Equal(t, int32(2), attempts.Load())
+	require.Len(t, requestBodies, 2)
+	for _, requestBody := range requestBodies {
+		assert.JSONEq(t, `{"schemaVersion":"v1"}`, string(requestBody))
+	}
+}
+
 func TestNewClient_SetsCustomHeaders(t *testing.T) {
 	customHeaders := map[string]string{
 		"CF-Access-Client-Id":     "test-id.access",
@@ -1709,6 +1789,7 @@ func TestNewClient_ReservedHeadersSkipped(t *testing.T) {
 	customHeaders := map[string]string{
 		"Content-Type":        "text/plain",
 		"SIGNOZ-API-KEY":      "overridden-key",
+		"User-Agent":          "custom-client/1.0",
 		"CF-Access-Client-Id": "test-id",
 	}
 
@@ -1716,6 +1797,7 @@ func TestNewClient_ReservedHeadersSkipped(t *testing.T) {
 		// Reserved headers should NOT be overridden by custom headers
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "test-api-key", r.Header.Get("SIGNOZ-API-KEY"))
+		assert.Equal(t, "custom-client/1.0 "+version.UserAgent(), r.Header.Get("User-Agent"))
 
 		// Non-reserved custom headers should still be injected
 		assert.Equal(t, "test-id", r.Header.Get("CF-Access-Client-Id"))
@@ -1836,13 +1918,55 @@ func TestListViews(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
-	_, err := c.ListViews(context.Background(), "traces", "ak", "ops")
+	_, err := c.ListViews(context.Background(), "traces", "ak")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, gotMethod)
-	assert.Equal(t, "/api/v1/explorer/views", gotPath)
-	assert.Contains(t, gotRawQuery, "sourcePage=traces")
+	assert.Equal(t, "/api/v2/saved_views", gotPath)
+	assert.Contains(t, gotRawQuery, "source=traces")
 	assert.Contains(t, gotRawQuery, "name=ak")
-	assert.Contains(t, gotRawQuery, "category=ops")
+	assert.NotContains(t, gotRawQuery, "category=")
+}
+
+func TestListDashboards_ForwardsFilterSortOrder(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"dashboards":[],"tags":[],"total":0}}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
+	_, err := c.ListDashboards(context.Background(), 50, 0, "name CONTAINS 'overview'", "name", "asc")
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, gotMethod)
+	assert.Equal(t, "/api/v2/dashboards", gotPath)
+	// The MCP `filter` maps to the v2 API's `query` param; sort/order pass through as-is.
+	assert.Equal(t, "name CONTAINS 'overview'", gotQuery.Get("query"))
+	assert.Equal(t, "name", gotQuery.Get("sort"))
+	assert.Equal(t, "asc", gotQuery.Get("order"))
+	assert.Equal(t, "50", gotQuery.Get("limit"))
+}
+
+func TestListDashboards_OmitsEmptyListParams(t *testing.T) {
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"dashboards":[],"tags":[],"total":0}}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
+	_, err := c.ListDashboards(context.Background(), 50, 0, "", "", "")
+	require.NoError(t, err)
+	for _, p := range []string{"query", "sort", "order"} {
+		_, has := gotQuery[p]
+		assert.Falsef(t, has, "empty %s must not be sent", p)
+	}
 }
 
 func TestGetView(t *testing.T) {
@@ -1857,7 +1981,7 @@ func TestGetView(t *testing.T) {
 	_, err := c.GetView(context.Background(), "view-uuid-1")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, gotMethod)
-	assert.Equal(t, "/api/v1/explorer/views/view-uuid-1", gotPath)
+	assert.Equal(t, "/api/v2/saved_views/view-uuid-1", gotPath)
 }
 
 func TestCreateView(t *testing.T) {
@@ -1871,11 +1995,11 @@ func TestCreateView(t *testing.T) {
 	}))
 	defer server.Close()
 	c := NewClient(logpkg.New("error"), server.URL, "k", "SIGNOZ-API-KEY", nil, "")
-	body := []byte(`{"name":"x","sourcePage":"traces","compositeQuery":{}}`)
+	body := []byte(`{"name":"x","source":"traces","spec":{}}`)
 	_, err := c.CreateView(context.Background(), body)
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPost, gotMethod)
-	assert.Equal(t, "/api/v1/explorer/views", gotPath)
+	assert.Equal(t, "/api/v2/saved_views", gotPath)
 	assert.JSONEq(t, string(body), string(gotBody))
 }
 
@@ -1891,7 +2015,7 @@ func TestUpdateView(t *testing.T) {
 	_, err := c.UpdateView(context.Background(), "view-1", []byte(`{}`))
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPut, gotMethod)
-	assert.Equal(t, "/api/v1/explorer/views/view-1", gotPath)
+	assert.Equal(t, "/api/v2/saved_views/view-1", gotPath)
 }
 
 func TestDeleteView(t *testing.T) {
@@ -1906,7 +2030,7 @@ func TestDeleteView(t *testing.T) {
 	_, err := c.DeleteView(context.Background(), "view-1")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodDelete, gotMethod)
-	assert.Equal(t, "/api/v1/explorer/views/view-1", gotPath)
+	assert.Equal(t, "/api/v2/saved_views/view-1", gotPath)
 }
 
 func TestSharedTransportPoolTuning(t *testing.T) {

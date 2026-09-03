@@ -7,13 +7,19 @@ import (
 	"testing"
 	"time"
 
+	signozclient "github.com/SigNoz/signoz-mcp-server/internal/client"
 	docsindex "github.com/SigNoz/signoz-mcp-server/internal/docs"
-	"github.com/mark3labs/mcp-go/mcp"
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
+	"github.com/SigNoz/signoz-mcp-server/internal/testutil/oteltest"
+	otelpkg "github.com/SigNoz/signoz-mcp-server/pkg/otel"
+	"github.com/SigNoz/signoz-mcp-server/pkg/util"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestDocsHandlers(t *testing.T) {
-	ctx := context.Background()
+	ctx := util.SetClientSource(context.Background(), "ai-assistant")
 
 	t.Run("index not ready", func(t *testing.T) {
 		h := newTestHandler(nil)
@@ -25,6 +31,12 @@ func TestDocsHandlers(t *testing.T) {
 
 	h, cleanup := newDocsTestHandler(t)
 	defer cleanup()
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = meterProvider.Shutdown(context.Background()) })
+	meters, err := otelpkg.NewMeters(meterProvider)
+	require.NoError(t, err)
+	h.SetMeters(meters)
 
 	t.Run("search section filter and snippet", func(t *testing.T) {
 		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
@@ -38,6 +50,81 @@ func TestDocsHandlers(t *testing.T) {
 		require.NotEmpty(t, search.Results)
 		require.Equal(t, "logs-management", search.Results[0].SectionSlug)
 		require.Contains(t, strings.ToLower(search.Results[0].Snippet), "docker")
+	})
+
+	t.Run("search docs requires searchText not filter", func(t *testing.T) {
+		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
+			"filter": "docker collector logs",
+			"limit":  5,
+		}))
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+		require.Contains(t, textContent(t, result), `"searchText" is required`)
+	})
+
+	t.Run("search docs accepts canonical searchText", func(t *testing.T) {
+		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
+			"searchText":   "docker collector logs",
+			"section_slug": "logs-management",
+			"limit":        5,
+		}))
+		require.NoError(t, err)
+		require.False(t, result.IsError)
+		search := result.StructuredContent.(docsindex.SearchResponse)
+		require.NotEmpty(t, search.Results)
+	})
+
+	t.Run("search docs accepts legacy query alias", func(t *testing.T) {
+		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
+			"query": "docker collector logs",
+			"limit": 5,
+		}))
+		require.NoError(t, err)
+		require.False(t, result.IsError)
+		search := result.StructuredContent.(docsindex.SearchResponse)
+		require.NotEmpty(t, search.Results)
+	})
+
+	t.Run("search docs prefers searchText over legacy query", func(t *testing.T) {
+		// When both are present, the canonical searchText wins.
+		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
+			"searchText": "docker collector logs",
+			"query":      "",
+			"limit":      5,
+		}))
+		require.NoError(t, err)
+		require.False(t, result.IsError)
+		search := result.StructuredContent.(docsindex.SearchResponse)
+		require.NotEmpty(t, search.Results)
+	})
+
+	t.Run("invalid search syntax is caller-correctable", func(t *testing.T) {
+		result, err := h.handleSearchDocs(ctx, makeToolRequest("signoz_search_docs", map[string]any{
+			"searchText": `"unclosed`,
+		}))
+		require.NoError(t, err)
+		require.Equal(t, CodeValidationFailed, resultCode(t, result))
+		require.NotContains(t, resultText(t, result), docsindex.ErrInvalidSearchQuery.Error())
+	})
+
+	t.Run("search cancellation preserves cause", func(t *testing.T) {
+		canceledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		result, err := h.handleSearchDocs(canceledCtx, makeToolRequest("signoz_search_docs", map[string]any{
+			"searchText": "docker",
+		}))
+		require.NoError(t, err)
+		require.Equal(t, CodeCanceled, resultCode(t, result))
+	})
+
+	t.Run("fetch deadline preserves cause", func(t *testing.T) {
+		expiredCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+		defer cancel()
+		result, err := h.handleFetchDoc(expiredCtx, makeToolRequest("signoz_fetch_doc", map[string]any{
+			"url": "/docs/install/docker/",
+		}))
+		require.NoError(t, err)
+		require.Equal(t, CodeTimeout, resultCode(t, result))
 	})
 
 	t.Run("fetch errors", func(t *testing.T) {
@@ -75,10 +162,55 @@ func TestDocsHandlers(t *testing.T) {
 		contents, err := h.handleDocsSitemap(ctx, mcp.ReadResourceRequest{Params: mcp.ReadResourceParams{URI: docsindex.DocsSitemapURI}})
 		require.NoError(t, err)
 		require.Len(t, contents, 1)
-		text := contents[0].(mcp.TextResourceContents)
+		text := contents[0]
 		require.Equal(t, docsindex.DocsSitemapURI, text.URI)
 		require.Contains(t, text.Text, "Send logs to SigNoz")
 	})
+
+	var collected metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &collected))
+	for _, metricName := range []string{"signoz_docs_searches_total", "signoz_docs_fetches_total"} {
+		sum, found := oteltest.FindInt64SumMetric(collected, metricName)
+		require.True(t, found, "%s metric not found", metricName)
+		for _, point := range sum.DataPoints {
+			attr, present := point.Attributes.Value(otelpkg.MCPClientSourceKey)
+			require.True(t, present, "%s missing mcp.client_source", metricName)
+			require.Equal(t, "ai-assistant", attr.AsString(), "%s mcp.client_source", metricName)
+		}
+	}
+	duration, found := oteltest.FindFloat64HistogramMetric(collected, "signoz_docs_search_duration_seconds")
+	require.True(t, found, "signoz_docs_search_duration_seconds metric not found")
+	for _, point := range duration.DataPoints {
+		attr, present := point.Attributes.Value(otelpkg.MCPClientSourceKey)
+		require.True(t, present, "signoz_docs_search_duration_seconds missing mcp.client_source")
+		require.Equal(t, "ai-assistant", attr.AsString(), "signoz_docs_search_duration_seconds mcp.client_source")
+	}
+}
+
+// TestSearchDocs_SearchTextNotSchemaRequired pins the schema-aware-client
+// contract for the docs search tool: "searchText" must be an advertised
+// property but must NOT appear in the required list. The handler enforces "one
+// of searchText/query is present" itself; marking searchText mcp.Required()
+// would reject a legacy "query"-only call at the schema layer before the
+// handler's alias fallback ever runs (the alias would be dead for validating
+// clients). Mirrors TestUpdateStructs_IDNotSchemaRequired for the id-alias
+// tools.
+func TestSearchDocs_SearchTextNotSchemaRequired(t *testing.T) {
+	h := newTestHandler(&signozclient.MockClient{})
+	s := newMCPTestServer()
+	h.RegisterDocsHandlers(s)
+
+	tools := listTestTools(t, s)
+	st, ok := tools["signoz_search_docs"]
+	require.True(t, ok, "signoz_search_docs not registered")
+
+	props := inputSchemaProperties(t, st.Tool)
+	_, ok = props["searchText"]
+	require.True(t, ok, "searchText must remain an advertised property: %#v", props)
+
+	required := inputSchemaRequiredFields(t, st.Tool)
+	require.False(t, containsString(required, "searchText"),
+		"searchText must NOT be schema-required (would make the legacy query alias unusable for validating clients), got: %#v", required)
 }
 
 func newDocsTestHandler(t *testing.T) (*Handler, func()) {

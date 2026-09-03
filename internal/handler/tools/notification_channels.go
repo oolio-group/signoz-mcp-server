@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
 
 	logpkg "github.com/SigNoz/signoz-mcp-server/pkg/log"
 	"github.com/SigNoz/signoz-mcp-server/pkg/paginate"
@@ -23,47 +22,33 @@ var validChannelTypes = map[string]bool{
 	"msteams":   true,
 }
 
-func (h *Handler) RegisterNotificationChannelHandlers(s *server.MCPServer) {
+func (h *Handler) RegisterNotificationChannelHandlers(s *mcp.Server) {
 	h.logger.Debug("Registering notification channel handlers")
 
 	listChannelsTool := mcp.NewTool("signoz_list_notification_channels",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
 		mcp.WithDescription(
-			"List all notification channels configured in SigNoz.\n\n"+
-				"Returns channel id, name, type (slack, webhook, pagerduty, email, opsgenie, msteams), "+
-				"configuration details, and timestamps.\n\n"+
-				"Use this tool to discover existing channels before creating new ones or to verify channel configurations.\n\n"+
-				"Results are paginated. Use 'limit' and 'offset' to page through large result sets. "+
-				"The response includes pagination metadata: total count, hasMore flag, and nextOffset for the next page.",
+			"Use this when the user wants to discover configured notification channels, verify exact channel names before creating or updating an alert, avoid a duplicate name before channel creation, or find a channel ID. It returns paginated summaries only: id, name, type, and timestamps; it does not return provider-specific settings. Use signoz_get_notification_channel with an ID for all settings.",
 		),
-		mcp.WithString("limit", mcp.Description("Maximum number of channels to return per page. Default: 50.")),
-		mcp.WithString("offset", mcp.Description("Number of results to skip before returning results. Use for pagination: offset=0 for first page, offset=50 for second page (if limit=50). Check 'pagination.nextOffset' in the response to get the next page offset. Default: 0.")),
+		mcp.WithString("limit", mcp.DefaultString("50"), intOrStringType(), mcp.Description("Maximum number of channels to return per page. Default: 50, max: 1000 (higher values are clamped).")),
+		mcp.WithString("offset", mcp.DefaultString("0"), intOrStringType(), mcp.Description("Number of results to skip before returning results. Use for pagination: offset=0 for first page, offset=50 for second page (if limit=50). Check 'pagination.nextOffset' in the response to get the next page offset. Default: 0.")),
 	)
 
-	addTool(s, listChannelsTool, h.handleListNotificationChannels)
+	h.addTool(s, listChannelsTool, h.handleListNotificationChannels)
 
 	createChannelTool := mcp.NewTool("signoz_create_notification_channel",
-		mcp.WithDestructiveHintAnnotation(true),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
+		withCreateToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
 		mcp.WithDescription(
-			"Create a notification channel in SigNoz and send a test notification to verify it works.\n\n"+
+			"Use this when the user wants a new SigNoz notification channel. First call signoz_list_notification_channels and confirm the requested name is not already used. Supply the provider-specific required field documented in the input schema. A test notification is sent after creation; if the test fails, the channel still exists and the response reports the failure.\n"+
 				"SUPPORTED TYPES: slack, webhook, pagerduty, email, opsgenie, msteams\n\n"+
-				"REQUIRED FIELDS BY TYPE:\n"+
-				"- slack: name, slack_api_url (Slack incoming webhook URL)\n"+
-				"- webhook: name, webhook_url (endpoint URL)\n"+
-				"- pagerduty: name, pagerduty_routing_key (integration/routing key)\n"+
-				"- email: name, email_to (comma-separated email addresses)\n"+
-				"- opsgenie: name, opsgenie_api_key (OpsGenie API key)\n"+
-				"- msteams: name, msteams_webhook_url (MS Teams incoming webhook URL)\n\n"+
-				"After creating the channel, a test notification is always sent to verify the channel is working. "+
-				"The response includes both the channel creation result and the test notification outcome.",
+				"Use signoz_update_notification_channel to change an existing channel.",
 		),
 		// Common fields
-		mcp.WithString("type", mcp.Required(), mcp.Description("Channel type. One of: slack, webhook, pagerduty, email, opsgenie, msteams")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Unique name for the notification channel")),
-		mcp.WithString("send_resolved", mcp.Description("Whether to send notifications when alerts resolve. Values: 'true' or 'false'. Default: 'true'")),
+		mcp.WithString("type", mcp.Required(), mcp.Description("Channel type: slack, webhook, pagerduty, email, opsgenie, or msteams.")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Unique channel name. Before creating, verify it is unused with signoz_list_notification_channels.")),
+		mcp.WithBoolean("send_resolved", boolOrStringType(), mcp.Description("Whether to send notifications when alerts resolve. Default: true.")),
 
 		// Slack fields
 		mcp.WithString("slack_api_url", mcp.Description("Slack incoming webhook URL. Required when type=slack. Example: https://hooks.slack.com/services/T.../B.../xxx")),
@@ -97,35 +82,22 @@ func (h *Handler) RegisterNotificationChannelHandlers(s *server.MCPServer) {
 		mcp.WithString("msteams_text", mcp.Description("Message body template (Go template syntax supported)")),
 	)
 
-	addTool(s, createChannelTool, h.handleCreateNotificationChannel)
+	h.addTool(s, createChannelTool, h.handleCreateNotificationChannel)
 
 	updateChannelTool := mcp.NewTool("signoz_update_notification_channel",
-		mcp.WithDestructiveHintAnnotation(true),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
+		withNonIdempotentUpdateToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
 		mcp.WithDescription(
-			"Update an existing notification channel in SigNoz and send a test notification to verify it works.\n\n"+
-				"IMPORTANT: This replaces the full channel configuration. All fields must be provided, not just the ones being changed.\n\n"+
+			"Use this when the user wants to change an existing SigNoz notification channel. This is a full replacement: first find the ID with signoz_list_notification_channels, then call signoz_get_notification_channel and merge the requested change while preserving the complete provider configuration and send_resolved value. Omitting send_resolved resets it to true. A test notification is sent after update; an update can succeed even when that test fails, which is reported in the response.\n"+
 				"SUPPORTED TYPES: slack, webhook, pagerduty, email, opsgenie, msteams\n\n"+
-				"REQUIRED FIELDS:\n"+
-				"- id: The UUID of the channel to update\n"+
-				"- type: Channel type (slack, webhook, pagerduty, email, opsgenie, msteams)\n"+
-				"- name: Channel name\n\n"+
-				"REQUIRED FIELDS BY TYPE:\n"+
-				"- slack: slack_api_url (Slack incoming webhook URL)\n"+
-				"- webhook: webhook_url (endpoint URL)\n"+
-				"- pagerduty: pagerduty_routing_key (integration/routing key)\n"+
-				"- email: email_to (comma-separated email addresses)\n"+
-				"- opsgenie: opsgenie_api_key (OpsGenie API key)\n"+
-				"- msteams: msteams_webhook_url (MS Teams incoming webhook URL)\n\n"+
-				"After updating the channel, a test notification is always sent to verify the channel is working. "+
-				"The response includes both the channel update result and the test notification outcome.",
+				"Do not use this for partial updates.",
 		),
 		// ID field (required for update)
-		mcp.WithString("id", mcp.Required(), mcp.Description("The UUID of the notification channel to update")),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Notification channel UUID. Obtain it from signoz_list_notification_channels.")),
 		// Common fields
-		mcp.WithString("type", mcp.Required(), mcp.Description("Channel type. One of: slack, webhook, pagerduty, email, opsgenie, msteams")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Unique name for the notification channel")),
-		mcp.WithString("send_resolved", mcp.Description("Whether to send notifications when alerts resolve. Values: 'true' or 'false'. Default: 'true'")),
+		mcp.WithString("type", mcp.Required(), mcp.Description("Complete replacement channel type: slack, webhook, pagerduty, email, opsgenie, or msteams. Preserve the current type unless the user requested a change.")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Complete replacement channel name. Preserve the current name unless the user requested a change.")),
+		mcp.WithBoolean("send_resolved", boolOrStringType(), mcp.Description("Complete replacement resolved-notification setting. Copy the current value from signoz_get_notification_channel unless changing it; omission resets to true.")),
 
 		// Slack fields
 		mcp.WithString("slack_api_url", mcp.Description("Slack incoming webhook URL. Required when type=slack. Example: https://hooks.slack.com/services/T.../B.../xxx")),
@@ -159,92 +131,105 @@ func (h *Handler) RegisterNotificationChannelHandlers(s *server.MCPServer) {
 		mcp.WithString("msteams_text", mcp.Description("Message body template (Go template syntax supported)")),
 	)
 
-	addTool(s, updateChannelTool, h.handleUpdateNotificationChannel)
+	h.addTool(s, updateChannelTool, h.handleUpdateNotificationChannel)
 
 	getChannelTool := mcp.NewTool("signoz_get_notification_channel",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
-		mcp.WithDescription("Get a single notification channel by ID (GET /api/v1/channels/{id}). Returns the full channel configuration including the embedded receiver config (slack/webhook/pagerduty/email/opsgenie/msteams)."),
-		mcp.WithString("id", mcp.Required(), mcp.Description("The UUID of the notification channel.")),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
+		mcp.WithDescription("Use this when the user wants all provider-specific settings for one notification channel, especially before replacing it with signoz_update_notification_channel. It requires a known channel ID; use signoz_list_notification_channels to discover IDs. Do not use it to list channel names."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Notification channel UUID. Obtain it from signoz_list_notification_channels.")),
 	)
-	addTool(s, getChannelTool, h.handleGetNotificationChannel)
+	h.addTool(s, getChannelTool, h.handleGetNotificationChannel)
 
 	deleteChannelTool := mcp.NewTool("signoz_delete_notification_channel",
-		mcp.WithDestructiveHintAnnotation(true),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
-		mcp.WithDescription("Delete a notification channel by ID (DELETE /api/v1/channels/{id}). Irreversible. Confirm with the user before calling, and warn if the channel is referenced by existing alert rules."),
-		mcp.WithString("id", mcp.Required(), mcp.Description("The UUID of the notification channel to delete.")),
+		withDeleteToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
+		mcp.WithDescription("Use this when the user explicitly wants to permanently delete a notification channel. Resolve its ID with signoz_list_notification_channels and confirm the exact channel first. If both steps are already complete, call this tool directly without repeating list/get preflight. This tool does not check whether alert rules reference the channel; inspect configured rules first when dependency safety is required."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Notification channel UUID. Obtain it from signoz_list_notification_channels.")),
 	)
-	addTool(s, deleteChannelTool, h.handleDeleteNotificationChannel)
+	h.addTool(s, deleteChannelTool, h.handleDeleteNotificationChannel)
 }
 
 func (h *Handler) handleGetNotificationChannel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args, _ := req.Params.Arguments.(map[string]any)
-	id, _ := args["id"].(string)
-	if id == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "id" is required.`), nil
+	args, errResult := requireArgsMap(req.Params.Arguments)
+	if errResult != nil {
+		return errResult, nil
+	}
+	id, errResult := requireStringArg(args, "id")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	h.logger.DebugContext(ctx, "Tool called: signoz_get_notification_channel", slog.String("id", id))
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 
 	resp, err := client.GetNotificationChannel(ctx, id)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "Failed to get notification channel", slog.String("id", id), logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		h.logUpstreamFailure(ctx, "Failed to get notification channel", err, slog.String("id", id))
+		return upstreamError(err), nil
 	}
-	return mcp.NewToolResultText(string(resp)), nil
+	return structuredResult(resp), nil
 }
 
 func (h *Handler) handleDeleteNotificationChannel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args, _ := req.Params.Arguments.(map[string]any)
-	id, _ := args["id"].(string)
-	if id == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "id" is required.`), nil
+	args, errResult := requireArgsMap(req.Params.Arguments)
+	if errResult != nil {
+		return errResult, nil
+	}
+	id, errResult := requireStringArg(args, "id")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	h.logger.DebugContext(ctx, "Tool called: signoz_delete_notification_channel", slog.String("id", id))
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 
 	if err := client.DeleteNotificationChannel(ctx, id); err != nil {
-		h.logger.ErrorContext(ctx, "Failed to delete notification channel", slog.String("id", id), logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		h.logUpstreamFailure(ctx, "Failed to delete notification channel", err, slog.String("id", id))
+		return upstreamError(err), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf(`{"status":"success","id":%q}`, id)), nil
+	return structuredResult([]byte(fmt.Sprintf(`{"status":"success","id":%q}`, id))), nil
 }
 
 func (h *Handler) handleListNotificationChannels(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.DebugContext(ctx, "Tool called: signoz_list_notification_channels")
-	limit, offset := paginate.ParseParams(req.Params.Arguments)
+	limit, offset, limitClamped := paginate.ParseParamsClamped(req.Params.Arguments)
 
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 
 	result, err := client.ListNotificationChannels(ctx)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "Failed to list notification channels", logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		h.logUpstreamFailure(ctx, "Failed to list notification channels", err)
+		return upstreamError(err), nil
 	}
 
 	var response map[string]any
 	if err := json.Unmarshal(result, &response); err != nil {
 		h.logger.ErrorContext(ctx, "Failed to parse notification channels response", logpkg.ErrAttr(err))
-		return mcp.NewToolResultError("failed to parse response: " + err.Error()), nil
+		return upstreamResponseError("failed to parse response: " + err.Error()), nil
 	}
 
-	data, ok := response["data"].([]any)
-	if !ok {
-		h.logger.ErrorContext(ctx, "Invalid notification channels response format", slog.String("data", logpkg.TruncAny(response["data"])))
-		return mcp.NewToolResultError("invalid response format: expected data array"), nil
+	// Upstream returns `data: null`, omits `data`, or returns an empty
+	// object/scalar when there are no channels. Treat any non-array shape as zero
+	// rows rather than surfacing a format error (mirrors the list_views
+	// coerce-to-empty-page pattern).
+	var data []any
+	if raw, present := response["data"]; present && raw != nil {
+		if arr, ok := raw.([]any); ok {
+			data = arr
+		} else {
+			h.logger.DebugContext(ctx, "notification channels response data was not an array; treating as empty",
+				slog.String("data", logpkg.TruncAny(raw)))
+		}
 	}
 
 	// Summarize each channel to essential fields only (id, name, type, timestamps).
@@ -280,57 +265,58 @@ func (h *Handler) handleListNotificationChannels(ctx context.Context, req mcp.Ca
 	resultJSON, err := paginate.Wrap(pagedData, total, offset, limit)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "Failed to wrap notification channels with pagination", logpkg.ErrAttr(err))
-		return mcp.NewToolResultError("failed to marshal response: " + err.Error()), nil
+		return InternalErrorResult("failed to marshal response: " + err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(string(resultJSON)), nil
+	return listResult(resultJSON, limitClamped), nil
 }
 
 func (h *Handler) handleCreateNotificationChannel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.DebugContext(ctx, "Tool called: signoz_create_notification_channel")
 
-	args := req.Params.Arguments.(map[string]any)
+	args, errResult := requireArgsMap(req.Params.Arguments)
+	if errResult != nil {
+		return errResult, nil
+	}
 
 	// Validate required fields
-	channelType, _ := args["type"].(string)
-	if channelType == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "type" is required. Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`), nil
+	channelType, err := requireStringField(args, "type", ". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 	if !validChannelTypes[channelType] {
-		return mcp.NewToolResultError(fmt.Sprintf(`Invalid channel type: "%s". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`, channelType)), nil
+		return errorWithCode(CodeValidationFailed, fmt.Sprintf(`Invalid channel type: "%s". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`, channelType)), nil
 	}
 
-	name, _ := args["name"].(string)
-	if name == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "name" is required. Provide a unique name for the notification channel.`), nil
+	name, err := requireStringField(args, "name", ". Provide a unique name for the notification channel")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	sendResolved := true
-	if sr, ok := args["send_resolved"].(string); ok && sr != "" {
-		if sr == "false" {
-			sendResolved = false
-		} else if sr != "true" {
-			return mcp.NewToolResultError(fmt.Sprintf(`Invalid "send_resolved" value: "%s". Must be "true" or "false"`, sr)), nil
-		}
+	if v, present, err := parseBoolArg(args, "send_resolved"); err != nil {
+		return errorWithCode(CodeValidationFailed, fmt.Sprintf(`Parameter validation failed: %s`, err.Error())), nil
+	} else if present {
+		sendResolved = v
 	}
 
-	// Build receiver JSON based on type
+	// Errors here are per-type required-field validation failures, coded for retry.
 	receiverJSON, err := buildReceiverJSON(channelType, name, sendResolved, args)
 	if err != nil {
 		h.logger.WarnContext(ctx, "Failed to build receiver JSON", logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 
 	// Step 1: Create the channel
 	createResp, err := client.CreateNotificationChannel(ctx, receiverJSON)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "Failed to create notification channel", slog.String("type", channelType), slog.String("name", name), logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to create notification channel: %s", err.Error())), nil
+		h.logUpstreamFailure(ctx, "Failed to create notification channel", err, slog.String("type", channelType), slog.String("name", name))
+		return upstreamError(err), nil
 	}
 
 	h.logger.InfoContext(ctx, "Notification channel created", slog.String("type", channelType), slog.String("name", name))
@@ -343,6 +329,7 @@ func (h *Handler) handleCreateNotificationChannel(ctx context.Context, req mcp.C
 		"channel": json.RawMessage(createResp),
 	}
 
+	var testFailureNote string
 	if testErr != nil {
 		h.logger.WarnContext(ctx, "Test notification failed", slog.String("name", name), logpkg.ErrAttr(testErr))
 		result["test_notification"] = map[string]any{
@@ -350,6 +337,7 @@ func (h *Handler) handleCreateNotificationChannel(ctx context.Context, req mcp.C
 			"error":   testErr.Error(),
 			"message": fmt.Sprintf("Channel '%s' was created but the test notification failed: %s. Please verify the channel configuration.", name, testErr.Error()),
 		}
+		testFailureNote = testNotificationWarningNote(name, "created", testErr)
 	} else {
 		h.logger.InfoContext(ctx, "Test notification sent successfully", slog.String("name", name))
 		result["test_notification"] = map[string]any{
@@ -360,62 +348,75 @@ func (h *Handler) handleCreateNotificationChannel(ctx context.Context, req mcp.C
 
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
-		return mcp.NewToolResultError("failed to marshal response: " + err.Error()), nil
+		return upstreamResponseError("failed to marshal response: " + err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(string(resultJSON)), nil
+	// Fail OPEN: the channel WAS created, so we do not flip IsError (avoids a
+	// misleading error and a duplicate-create retry). The test-send failure is
+	// surfaced as a prominent advisory note alongside the structured body.
+	return structuredResultWithNotes(resultJSON, testFailureNote), nil
+}
+
+// testNotificationWarningNote formats the prominent advisory shown when a
+// channel was created/updated successfully but its verification test-send
+// failed. Kept uniform with the other "note:" advisory blocks.
+func testNotificationWarningNote(name, action string, testErr error) string {
+	return fmt.Sprintf(
+		"note: WARNING — notification channel %q was %s successfully, but the verification test notification FAILED: %s. The channel exists but may not deliver alerts; verify its configuration (URL/key/credentials) and re-test.",
+		name, action, testErr.Error())
 }
 
 func (h *Handler) handleUpdateNotificationChannel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.DebugContext(ctx, "Tool called: signoz_update_notification_channel")
 
-	args := req.Params.Arguments.(map[string]any)
+	args, errResult := requireArgsMap(req.Params.Arguments)
+	if errResult != nil {
+		return errResult, nil
+	}
 
 	// Validate id
-	id, _ := args["id"].(string)
-	if id == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "id" is required. Provide the UUID of the notification channel to update.`), nil
+	id, err := requireStringField(args, "id", ". Provide the UUID of the notification channel to update")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	// Validate required fields
-	channelType, _ := args["type"].(string)
-	if channelType == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "type" is required. Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`), nil
+	channelType, err := requireStringField(args, "type", ". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 	if !validChannelTypes[channelType] {
-		return mcp.NewToolResultError(fmt.Sprintf(`Invalid channel type: "%s". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`, channelType)), nil
+		return errorWithCode(CodeValidationFailed, fmt.Sprintf(`Invalid channel type: "%s". Must be one of: slack, webhook, pagerduty, email, opsgenie, msteams`, channelType)), nil
 	}
 
-	name, _ := args["name"].(string)
-	if name == "" {
-		return mcp.NewToolResultError(`Parameter validation failed: "name" is required. Provide a unique name for the notification channel.`), nil
+	name, err := requireStringField(args, "name", ". Provide a unique name for the notification channel")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	sendResolved := true
-	if sr, ok := args["send_resolved"].(string); ok && sr != "" {
-		if sr == "false" {
-			sendResolved = false
-		} else if sr != "true" {
-			return mcp.NewToolResultError(fmt.Sprintf(`Invalid "send_resolved" value: "%s". Must be "true" or "false"`, sr)), nil
-		}
+	if v, present, err := parseBoolArg(args, "send_resolved"); err != nil {
+		return errorWithCode(CodeValidationFailed, fmt.Sprintf(`Parameter validation failed: %s`, err.Error())), nil
+	} else if present {
+		sendResolved = v
 	}
 
-	// Build receiver JSON based on type
+	// Errors here are per-type required-field validation failures, coded for retry.
 	receiverJSON, err := buildReceiverJSON(channelType, name, sendResolved, args)
 	if err != nil {
 		h.logger.WarnContext(ctx, "Failed to build receiver JSON", logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 
 	// Step 1: Update the channel (204 No Content on success)
 	if err := client.UpdateNotificationChannel(ctx, id, receiverJSON); err != nil {
-		h.logger.ErrorContext(ctx, "Failed to update notification channel", slog.String("type", channelType), slog.String("name", name), slog.String("id", id), logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to update notification channel: %s", err.Error())), nil
+		h.logUpstreamFailure(ctx, "Failed to update notification channel", err, slog.String("type", channelType), slog.String("name", name), slog.String("id", id))
+		return upstreamError(err), nil
 	}
 
 	h.logger.InfoContext(ctx, "Notification channel updated", slog.String("type", channelType), slog.String("name", name), slog.String("id", id))
@@ -423,8 +424,13 @@ func (h *Handler) handleUpdateNotificationChannel(ctx context.Context, req mcp.C
 	// Follow up with a GET so the tool result carries the current channel state —
 	// the PUT returns 204 with no body in the new API.
 	channelResp, getErr := client.GetNotificationChannel(ctx, id)
+	var readBackNote string
 	if getErr != nil {
 		h.logger.WarnContext(ctx, "Channel updated but follow-up GET failed", slog.String("id", id), logpkg.ErrAttr(getErr))
+		// Fail OPEN: update succeeded; surface the unverified read-back as a note.
+		readBackNote = fmt.Sprintf(
+			"note: read-back after update failed: %s; the update itself succeeded but the returned channel state could not be re-fetched and may be stale.",
+			getErr.Error())
 	}
 
 	// Step 2: Test the channel
@@ -438,6 +444,7 @@ func (h *Handler) handleUpdateNotificationChannel(ctx context.Context, req mcp.C
 		result["channel"] = json.RawMessage(channelResp)
 	}
 
+	var testFailureNote string
 	if testErr != nil {
 		h.logger.WarnContext(ctx, "Test notification failed", slog.String("name", name), logpkg.ErrAttr(testErr))
 		result["test_notification"] = map[string]any{
@@ -445,6 +452,7 @@ func (h *Handler) handleUpdateNotificationChannel(ctx context.Context, req mcp.C
 			"error":   testErr.Error(),
 			"message": fmt.Sprintf("Channel '%s' was updated but the test notification failed: %s. Please verify the channel configuration.", name, testErr.Error()),
 		}
+		testFailureNote = testNotificationWarningNote(name, "updated", testErr)
 	} else {
 		h.logger.InfoContext(ctx, "Test notification sent successfully", slog.String("name", name))
 		result["test_notification"] = map[string]any{
@@ -455,10 +463,11 @@ func (h *Handler) handleUpdateNotificationChannel(ctx context.Context, req mcp.C
 
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
-		return mcp.NewToolResultError("failed to marshal response: " + err.Error()), nil
+		return upstreamResponseError("failed to marshal response: " + err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(string(resultJSON)), nil
+	// Fail OPEN: channel was updated; test-send and read-back failures become notes.
+	return structuredResultWithNotes(resultJSON, testFailureNote, readBackNote), nil
 }
 
 func getStringParam(args map[string]any, key string) string {
@@ -471,9 +480,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 
 	switch channelType {
 	case "slack":
-		apiURL := getStringParam(args, "slack_api_url")
-		if apiURL == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "slack_api_url" is required when type=slack. Provide the Slack incoming webhook URL`)
+		apiURL, err := requireStringField(args, "slack_api_url", " when type=slack. Provide the Slack incoming webhook URL")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.SlackConfig{
 			SendResolved: sendResolved,
@@ -485,9 +494,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 		receiver.SlackConfigs = []types.SlackConfig{cfg}
 
 	case "webhook":
-		webhookURL := getStringParam(args, "webhook_url")
-		if webhookURL == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "webhook_url" is required when type=webhook. Provide the webhook endpoint URL`)
+		webhookURL, err := requireStringField(args, "webhook_url", " when type=webhook. Provide the webhook endpoint URL")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.WebhookConfig{
 			SendResolved: sendResolved,
@@ -506,9 +515,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 		receiver.WebhookConfigs = []types.WebhookConfig{cfg}
 
 	case "pagerduty":
-		routingKey := getStringParam(args, "pagerduty_routing_key")
-		if routingKey == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "pagerduty_routing_key" is required when type=pagerduty. Provide the PagerDuty integration/routing key`)
+		routingKey, err := requireStringField(args, "pagerduty_routing_key", " when type=pagerduty. Provide the PagerDuty integration/routing key")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.PagerdutyConfig{
 			SendResolved: sendResolved,
@@ -519,9 +528,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 		receiver.PagerdutyConfigs = []types.PagerdutyConfig{cfg}
 
 	case "email":
-		to := getStringParam(args, "email_to")
-		if to == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "email_to" is required when type=email. Provide comma-separated email addresses`)
+		to, err := requireStringField(args, "email_to", " when type=email. Provide comma-separated email addresses")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.EmailConfig{
 			SendResolved: sendResolved,
@@ -531,9 +540,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 		receiver.EmailConfigs = []types.EmailConfig{cfg}
 
 	case "opsgenie":
-		apiKey := getStringParam(args, "opsgenie_api_key")
-		if apiKey == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "opsgenie_api_key" is required when type=opsgenie. Provide the OpsGenie API key`)
+		apiKey, err := requireStringField(args, "opsgenie_api_key", " when type=opsgenie. Provide the OpsGenie API key")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.OpsgenieConfig{
 			SendResolved: sendResolved,
@@ -545,9 +554,9 @@ func buildReceiverJSON(channelType, name string, sendResolved bool, args map[str
 		receiver.OpsgenieConfigs = []types.OpsgenieConfig{cfg}
 
 	case "msteams":
-		webhookURL := getStringParam(args, "msteams_webhook_url")
-		if webhookURL == "" {
-			return nil, fmt.Errorf(`parameter validation failed: "msteams_webhook_url" is required when type=msteams. Provide the MS Teams incoming webhook URL`)
+		webhookURL, err := requireStringField(args, "msteams_webhook_url", " when type=msteams. Provide the MS Teams incoming webhook URL")
+		if err != nil {
+			return nil, err
 		}
 		cfg := types.MSTeamsV2Config{
 			SendResolved: sendResolved,

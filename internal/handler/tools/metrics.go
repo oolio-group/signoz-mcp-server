@@ -3,64 +3,55 @@ package tools
 import (
 	"context"
 	"log/slog"
-	"strconv"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
 
-	logpkg "github.com/SigNoz/signoz-mcp-server/pkg/log"
 	"github.com/SigNoz/signoz-mcp-server/pkg/metricsrules"
 )
 
-func (h *Handler) RegisterMetricsHandlers(s *server.MCPServer) {
+func (h *Handler) RegisterMetricsHandlers(s *mcp.Server) {
 	h.logger.Debug("Registering metrics handlers")
 
 	listMetricsTool := mcp.NewTool("signoz_list_metrics",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
-		mcp.WithDescription("Search and list available metrics from SigNoz. Supports filtering by name substring, time range, and source. Use searchText to find metrics by name."),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
+		mcp.WithDescription("Use this when the user needs to discover metric names or inspect catalog metadata such as type, temporality, unit, and monotonicity. It lists metrics active in the requested window; searchText filters names by substring. Do not use it for metric values or trends; use signoz_query_metrics, which can query a known exact name directly and auto-fetch missing metadata. Use source=\"meter\" only for Cost Meter metrics. Results have a limit but no offset pagination, so narrow the search if the cap is reached."),
 		mcp.WithString("searchText", mcp.Description("Filter metrics by name substring (optional). Example: 'cpu', 'memory', 'http_requests'.")),
-		mcp.WithString("limit", mcp.Description("Maximum number of metrics to return (optional, default 50).")),
-		mcp.WithString("start", mcp.Description("Start time in unix milliseconds (optional).")),
-		mcp.WithString("end", mcp.Description("End time in unix milliseconds (optional).")),
-		mcp.WithString("source", mcp.Description("Optional data-source filter. Use \"meter\" to list Cost Meter metrics — the usage/billing metrics SigNoz meters on (currently telemetry ingestion volume). Omit for the default SigNoz metrics store.")),
+		mcp.WithString("limit", mcp.DefaultString("50"), intOrStringType(), mcp.Description("Maximum number of metrics to return (optional). Default: 50.")),
+		mcp.WithString("timeRange", mcp.DefaultString("1h"), mcp.Description(timeRangeDesc("Defaults to '1h'."))),
+		mcp.WithString("start", intOrStringType(), mcp.Description("Start time in unix milliseconds (optional). When both start and end are provided, they override timeRange.")),
+		mcp.WithString("end", intOrStringType(), mcp.Description("End time in unix milliseconds (optional). When both start and end are provided, they override timeRange.")),
+		mcp.WithString("source", mcp.Description("Optional data-source filter. Use \"meter\" to list Cost Meter metrics, the usage/billing metrics SigNoz meters on (currently telemetry ingestion volume). Omit for the default SigNoz metrics store.")),
 	)
 
-	addTool(s, listMetricsTool, h.handleListMetrics)
+	h.addTool(s, listMetricsTool, h.handleListMetrics)
 
 	// signoz_query_metrics — smart metrics query tool with aggregation validation and defaults
 	queryMetricsTool := mcp.NewTool("signoz_query_metrics",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
 		mcp.WithDescription(
-			"Query metrics from SigNoz with smart aggregation defaults and validation. "+
-				"Automatically applies the right timeAggregation and spaceAggregation based on metric type "+
-				"(gauge, counter, histogram). If metricType is not provided, it is auto-fetched via signoz_list_metrics. "+
-				"Every response includes a [Decisions applied] block showing all defaults used. "+
-				"Read the signoz://metrics-aggregation-guide resource for full aggregation rules and examples. "+
-				"TIP: Call signoz_list_metrics first to get the metric's type, temporality, and isMonotonic."),
+			"Use this when the user wants metric values, trends, breakdowns, or formulas. It returns scalar or time-series results, applies metric-aware aggregation defaults, and reports the decisions used. If the exact metricName is known, call this directly: when metricType is omitted, type, temporality, and monotonicity are auto-fetched together. Use signoz_list_metrics only to discover names or inspect catalog metadata; use signoz_execute_builder_query for complex multi-query requests this tool cannot express. Standalone and formula results are capped at the top 100; formula inputs at 10000. Grouped time-series top-N is ranked over the whole window. Read signoz://metrics-aggregation-guide for rules and examples."),
 		mcp.WithString("metricName", mcp.Required(), mcp.Description("Name of the metric to query. Example: 'container.cpu.utilization', 'http_requests_total'.")),
-		mcp.WithString("metricType", mcp.Description("Metric type: gauge, sum, histogram, or exponential_histogram. Auto-fetched from signoz_list_metrics if not provided.")),
-		mcp.WithString("isMonotonic", mcp.Description("Whether the metric is monotonically increasing (true/false). Only relevant for type=sum. Auto-fetched if not provided.")),
-		mcp.WithString("temporality", mcp.Description("Metric temporality: cumulative, delta, or unspecified. Auto-fetched if not provided.")),
+		mcp.WithString("metricType", mcp.Description("Metric type: gauge, sum, histogram, or exponential_histogram. Omit to auto-fetch it with temporality and monotonicity.")),
+		mcp.WithBoolean("isMonotonic", boolOrStringType(), mcp.Description("Whether a type=sum metric is monotonically increasing. Auto-fetched when metricType is omitted; otherwise provide the correct value for sum metrics.")),
+		mcp.WithString("temporality", mcp.Description("Metric temporality: cumulative, delta, or unspecified. Auto-fetched when metricType is omitted; otherwise provide the metric's value when it affects aggregation.")),
 		mcp.WithString("timeAggregation", mcp.Description("Aggregation over time buckets. Auto-defaulted based on metricType. Valid: latest, sum, avg, min, max, count, count_distinct, rate, increase (type-dependent).")),
 		mcp.WithString("spaceAggregation", mcp.Description("Aggregation across series/dimensions. Auto-defaulted based on metricType. Valid: sum, avg, min, max, count, p50, p75, p90, p95, p99 (type-dependent).")),
-		mcp.WithString("groupBy", mcp.Description("Comma-separated field names to group by. fieldContext is auto-detected (k8s.*, container.*, host.* → resource; others → attribute). Example: 'k8s.namespace.name,k8s.pod.name'.")),
+		mcp.WithString("groupBy", stringOrStringArrayType(), mcp.Description("Comma-separated field names or an array of field names. Context is inferred as resource for k8s.*, container.*, host.*, cloud.*, deployment.*, process.*, service.*, telemetry.*, and os.*; all other names use attribute context.")),
 		mcp.WithString("filter", mcp.Description("Filter expression. Example: \"k8s.cluster.name = 'prod' AND service.name = 'frontend'\".")),
-		mcp.WithString("timeRange", mcp.Description("Relative time range: 30m, 1h, 6h, 24h, 7d. Default: 1h. Ignored when both start and end are provided.")),
-		mcp.WithString("start", mcp.Description("Start time in unix milliseconds. When both start and end are provided, they override timeRange.")),
-		mcp.WithString("end", mcp.Description("End time in unix milliseconds. When both start and end are provided, they override timeRange.")),
-		mcp.WithString("stepInterval", mcp.Description("Step interval in seconds. Auto-calculated (~300 data points, min 60s) if not provided.")),
-		mcp.WithString("requestType", mcp.Description("Response format: time_series (default) or scalar.")),
+		mcp.WithString("timeRange", mcp.DefaultString("1h"), mcp.Description(timeRangeDesc("Defaults to '1h'."))),
+		mcp.WithString("start", intOrStringType(), mcp.Description("Start time in unix milliseconds. When both start and end are provided, they override timeRange.")),
+		mcp.WithString("end", intOrStringType(), mcp.Description("End time in unix milliseconds. When both start and end are provided, they override timeRange.")),
+		mcp.WithString("stepInterval", intOrStringType(), mcp.Description("Step interval in seconds for time_series mode (optional). When omitted, the backend auto-selects an appropriate interval (~300 data points, min 60s). Only set this if the user explicitly requests a specific granularity. Examples: '60' (1 min), '3600' (1 hour), '86400' (1 day).")),
+		mcp.WithString("requestType", mcp.DefaultString("time_series"), mcp.Enum("scalar", "time_series"), mcp.Description("Response format: \"time_series\" (default) returns one value per time bucket; \"scalar\" returns a single reduced value per series.")),
 		mcp.WithString("reduceTo", mcp.Description("For requestType=scalar only. Reduces time series to a single value: sum, count, avg, min, max, last, median. Auto-defaulted by metricType.")),
 		mcp.WithString("formula", mcp.Description("Formula expression over named queries. Example: 'A / B * 100'. The primary metric becomes query 'A'. Additional queries are defined in formulaQueries.")),
-		mcp.WithString("formulaQueries", mcp.Description("JSON array of additional named metric queries for formula. Each object: {\"name\":\"B\", \"metricName\":\"...\", \"metricType\":\"...\", \"isMonotonic\":true, \"temporality\":\"...\", \"timeAggregation\":\"...\", \"spaceAggregation\":\"...\", \"groupBy\":[\"...\"], \"filter\":\"...\"}. All fields except name and metricName are optional.")),
+		mcp.WithString("formulaQueries", stringOrArrayType(), mcp.Description("JSON array, or JSON-encoded array string, of additional named metric queries for formula. Each object supports {name, metricName, metricType, isMonotonic, temporality, timeAggregation, spaceAggregation, groupBy, filter}; name and metricName are required.")),
 		mcp.WithString("source", mcp.Description("Optional data-source filter forwarded to the backend. Use \"meter\" to query Cost Meter data. Omit for the default SigNoz metrics store.")),
 	)
 
-	addTool(s, queryMetricsTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	h.addTool(s, queryMetricsTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return h.handleQueryMetrics(ctx, req)
 	})
 
@@ -68,15 +59,16 @@ func (h *Handler) RegisterMetricsHandlers(s *server.MCPServer) {
 	metricsGuideResource := mcp.NewResource(
 		"signoz://metrics-aggregation-guide",
 		"Metrics Aggregation Guide",
-		mcp.WithResourceDescription("Complete guide for metrics aggregation rules, defaults, payload examples, and common pitfalls. Covers gauge, counter, histogram, and exponential_histogram types with valid timeAggregation and spaceAggregation options."),
-		mcp.WithMIMEType("text/plain"),
+		mcp.WithResourceDescription("Read this before choosing aggregations for signoz_query_metrics or building metrics Query Builder JSON. It explains timeAggregation, spaceAggregation, and reduceTo by metric type; formulas and limits; how groupBy field context is inferred; top-N selection across the full window; step intervals; examples; and Cost Meter queries."),
+		mcp.WithMIMEType("text/markdown"),
+		mcp.WithResourceSize(int64(len(metricsrules.MetricsGuide))),
 	)
 
-	s.AddResource(metricsGuideResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	h.addResource(s, metricsGuideResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		return []mcp.ResourceContents{
 			mcp.TextResourceContents{
 				URI:      req.Params.URI,
-				MIMEType: "text/plain",
+				MIMEType: "text/markdown",
 				Text:     metricsrules.MetricsGuide,
 			},
 		}, nil
@@ -84,42 +76,41 @@ func (h *Handler) RegisterMetricsHandlers(s *server.MCPServer) {
 }
 
 func (h *Handler) handleListMetrics(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.Params.Arguments.(map[string]any)
+	args := req.GetArguments()
+	if args == nil {
+		args = map[string]any{}
+	}
 
 	searchText, _ := args["searchText"].(string)
 	source, _ := args["source"].(string)
 
-	var limit int
-	if l, ok := args["limit"].(string); ok && l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 {
-			limit = v
-		}
-	}
-	if limit == 0 {
-		limit = 50
+	limit, err := intArg(args, "limit", 50)
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
-	var start, end int64
-	if s, ok := args["start"].(string); ok && s != "" {
-		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-			start = v
-		}
-	}
-	if e, ok := args["end"].(string); ok && e != "" {
-		if v, err := strconv.ParseInt(e, 10, 64); err == nil {
-			end = v
-		}
+	// Route timestamps through the shared helper: standard 1h default window,
+	// magnitude auto-detect, and string-typed start/end. Returns canonical ms.
+	start, end, err := resolveTimestamps(args, "1h")
+	if err != nil {
+		return errorWithCode(CodeValidationFailed, err.Error()), nil
 	}
 
 	h.logger.DebugContext(ctx, "Tool called: signoz_list_metrics", slog.String("searchText", searchText))
 	client, err := h.GetClient(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return clientError(err), nil
 	}
 	result, err := client.ListMetrics(ctx, start, end, limit, searchText, source)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "Failed to list metrics", slog.String("searchText", searchText), logpkg.ErrAttr(err))
-		return mcp.NewToolResultError(err.Error()), nil
+		h.logUpstreamFailure(ctx, "Failed to list metrics", err, slog.String("searchText", searchText))
+		return upstreamError(err), nil
 	}
-	return mcp.NewToolResultText(string(result)), nil
+
+	// Completeness signal: list_metrics is a raw passthrough with a limit but NO
+	// offset paging — so the note must advise narrowing rather than claim
+	// offset pagination (a caller following an offset hint would loop the page).
+	returnedRows, rowsKnown := countDataArrayRows(result, "metrics")
+	note := limitOnlyCompletenessNote(returnedRows, limit, rowsKnown, `searchText, a tighter time range, or source`)
+	return resultWithNotes(result, note), nil
 }

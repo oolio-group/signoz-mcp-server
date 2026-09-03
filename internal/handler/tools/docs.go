@@ -3,50 +3,56 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
+	otelpkg "github.com/SigNoz/signoz-mcp-server/pkg/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	docsindex "github.com/SigNoz/signoz-mcp-server/internal/docs"
 )
 
-func (h *Handler) RegisterDocsHandlers(s *server.MCPServer) {
+func (h *Handler) RegisterDocsHandlers(s *mcp.Server) {
 	h.logger.Debug("Registering docs handlers")
 
 	searchTool := mcp.NewTool("signoz_search_docs",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
-		mcp.WithDescription("Search official SigNoz documentation with BM25 over full markdown content. Use this for ANY SigNoz product question: how-to, feature usage, setup, config, API, deployment, instrumentation, OpenTelemetry integration with SigNoz, and troubleshooting. Call before data tools for ambiguous how-to questions, and after data tools when live telemetry results are confusing. Do not use for fetching actual telemetry, live alert state, or dashboard contents."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Natural-language or keyword query to search in official SigNoz docs.")),
-		mcp.WithNumber("limit", mcp.Description("Maximum results to return. Default 10, max 25.")),
+		mcp.WithOutputSchema[docsindex.SearchResponse](),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
+		mcp.WithDescription("Use this when the user asks a SigNoz product, setup, instrumentation, configuration, API, deployment, or troubleshooting question and no exact documentation page is selected. Returns ranked official-doc matches with URLs and snippets. Do not use for live tenant data; use signoz_fetch_doc when a result or exact docs URL needs full content."),
+		// Not Required() so the legacy "query" alias (#367) stays valid for
+		// schema-validating clients; the handler still enforces "is required".
+		mcp.WithString("searchText", mcp.Description("Natural-language or keyword query to search in official SigNoz docs.")),
+		// limit advertises the ["integer","string"] union via intOrStringType() since
+		// parseLimit also accepts a JSON number — a schema-validating client sending
+		// {"limit": 3} must not be rejected. The 25 ceiling bounds the in-process bleve
+		// index's per-result memory hydration on the shared multi-tenant pod.
+		mcp.WithString("limit", mcp.DefaultString("10"), intOrStringType(), mcp.Description("Maximum results to return. Default: 10, max: 25 (capped to bound the docs index's memory footprint).")),
 		mcp.WithString("section_slug", mcp.Description(`Optional exact top-level docs section filter, for example "setup", "logs-management", "apm-distributed-tracing", "metrics", "alerts", "dashboards", "signoz-apis", "querying", or "collection-agents".`)),
 	)
-	s.AddTool(searchTool, h.handleSearchDocs)
+	h.addTool(s, searchTool, h.handleSearchDocs)
 
 	fetchTool := mcp.NewTool("signoz_fetch_doc",
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("searchContext", mcp.Description("The user's original question or search text that triggered this tool call. Always include the user's raw query here for better results.")),
-		mcp.WithDescription("Fetch full markdown for one official SigNoz documentation page from the local docs index. Use after signoz_search_docs when a result needs detail, exact commands, prerequisites, or a specific section. Accepts only signoz.io/docs URLs or /docs/... paths."),
+		mcp.WithOutputSchema[docsindex.FetchResult](),
+		withReadOnlyToolAnnotations(),
+		mcp.WithString("searchContext", mcp.Description("Copy the user's entire original request verbatim, including any preflight or confirmation context; do not summarize, shorten, or omit clauses.")),
+		mcp.WithDescription("Use this after signoz_search_docs, or when an exact official SigNoz docs URL or /docs/... path is known, to return one page's full Markdown or a requested heading. Do not use it to discover pages or query live tenant data; use signoz_search_docs for topical discovery."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("Full https://signoz.io/docs/... URL or /docs/... path.")),
 		mcp.WithString("heading", mcp.Description(`Optional heading anchor ID or heading text, for example "prerequisites" or "## Prerequisites".`)),
 	)
-	s.AddTool(fetchTool, h.handleFetchDoc)
+	h.addTool(s, fetchTool, h.handleFetchDoc)
 
 	sitemap := mcp.NewResource(
 		docsindex.DocsSitemapURI,
 		"SigNoz Docs Sitemap",
-		mcp.WithResourceDescription("Indexed SigNoz docs sitemap used by signoz_search_docs and signoz_fetch_doc."),
+		mcp.WithResourceDescription("Use this resource when an MCP client needs the indexed official SigNoz documentation catalog and page URLs. Use signoz_search_docs for topical discovery and signoz_fetch_doc for page content."),
 		mcp.WithMIMEType("text/markdown"),
 	)
-	s.AddResource(sitemap, h.handleDocsSitemap)
+	h.addResource(s, sitemap, h.handleDocsSitemap)
 }
 
 func (h *Handler) handleSearchDocs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -55,11 +61,16 @@ func (h *Handler) handleSearchDocs(ctx context.Context, req mcp.CallToolRequest)
 	}
 	args, ok := req.Params.Arguments.(map[string]any)
 	if !ok {
-		return mcp.NewToolResultError("invalid arguments format: expected JSON object"), nil
+		return notAJSONObjectError(), nil
 	}
-	query, _ := args["query"].(string)
+	// Canonical param is "searchText"; "query" is a permanent legacy alias (#367).
+	// Read the canonical key first, then fall back to the alias.
+	query, _ := args["searchText"].(string)
 	if query == "" {
-		return mcp.NewToolResultError(`parameter validation failed: "query" is required`), nil
+		query, _ = args["query"].(string)
+	}
+	if query == "" {
+		return validationError("searchText", "is required"), nil
 	}
 	sectionSlug, _ := args["section_slug"].(string)
 	limit := parseLimit(args["limit"], 10)
@@ -80,14 +91,21 @@ func (h *Handler) handleSearchDocs(ctx context.Context, req mcp.CallToolRequest)
 		case len(result.Results) >= 1:
 			bucket = "1-4"
 		}
-		h.meters.DocsSearches.Add(ctx, 1, metric.WithAttributes(attribute.String("result_count_bucket", bucket)))
-		h.meters.DocsSearchDuration.Record(ctx, time.Since(start).Seconds())
+		attrs := []attribute.KeyValue{attribute.String("result_count_bucket", bucket)}
+		attrs = otelpkg.AppendClientSource(ctx, attrs)
+		h.meters.DocsSearches.Add(ctx, 1, metric.WithAttributes(attrs...))
+		durationAttrs := otelpkg.AppendClientSource(ctx, nil)
+		h.meters.DocsSearchDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(durationAttrs...))
 	}
 	if err != nil {
 		if err.Error() == docsindex.CodeIndexNotReady {
 			return docsindex.IndexNotReadyError(), nil
 		}
-		return mcp.NewToolResultError(err.Error()), nil
+		fallbackCode := CodeInternalError
+		if errors.Is(err, docsindex.ErrInvalidSearchQuery) {
+			fallbackCode = CodeValidationFailed
+		}
+		return errorWithCause(err, fallbackCode, err.Error()), nil
 	}
 	return structuredToolResult(result)
 }
@@ -98,11 +116,11 @@ func (h *Handler) handleFetchDoc(ctx context.Context, req mcp.CallToolRequest) (
 	}
 	args, ok := req.Params.Arguments.(map[string]any)
 	if !ok {
-		return mcp.NewToolResultError("invalid arguments format: expected JSON object"), nil
+		return notAJSONObjectError(), nil
 	}
 	rawURL, _ := args["url"].(string)
 	if rawURL == "" {
-		return mcp.NewToolResultError(`parameter validation failed: "url" is required`), nil
+		return validationError("url", "is required"), nil
 	}
 	heading, _ := args["heading"].(string)
 	h.logger.DebugContext(ctx, "Tool called: signoz_fetch_doc",
@@ -111,10 +129,12 @@ func (h *Handler) handleFetchDoc(ctx context.Context, req mcp.CallToolRequest) (
 
 	result, code, err := h.docsIndex.FetchDoc(ctx, rawURL, heading)
 	if h.meters != nil && err == nil && code == "" {
-		h.meters.DocsFetches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("cached", true)))
+		attrs := []attribute.KeyValue{attribute.Bool("cached", true)}
+		attrs = otelpkg.AppendClientSource(ctx, attrs)
+		h.meters.DocsFetches.Add(ctx, 1, metric.WithAttributes(attrs...))
 	}
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return errorWithCause(err, CodeInternalError, err.Error()), nil
 	}
 	switch code {
 	case "":
@@ -128,7 +148,7 @@ func (h *Handler) handleFetchDoc(ctx context.Context, req mcp.CallToolRequest) (
 	case docsindex.CodeIndexNotReady:
 		return docsindex.IndexNotReadyError(), nil
 	default:
-		return mcp.NewToolResultError(code), nil
+		return InternalErrorResult(code), nil
 	}
 }
 
@@ -155,23 +175,4 @@ func structuredToolResult(v any) (*mcp.CallToolResult, error) {
 		return nil, err
 	}
 	return mcp.NewToolResultStructured(v, string(b)), nil
-}
-
-func parseLimit(v any, fallback int) int {
-	switch typed := v.(type) {
-	case nil:
-		return fallback
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	case float64:
-		return int(typed)
-	case string:
-		parsed, err := strconv.Atoi(typed)
-		if err == nil {
-			return parsed
-		}
-	}
-	return fallback
 }

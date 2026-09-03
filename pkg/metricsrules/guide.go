@@ -6,12 +6,15 @@ const MetricsGuide = `# Metrics Aggregation Guide
 
 ## Pre-Query Checklist
 
-Before querying any metric, call **signoz_list_metrics** with the metric name to get:
+If the exact metric name is known, call **signoz_query_metrics** directly. When ` + "`metricType`" + ` is
+omitted, the tool looks up the metric and auto-fetches:
 - **type**: gauge, sum, histogram, exponential_histogram
 - **temporality**: cumulative, delta, unspecified
 - **isMonotonic**: true/false (only relevant for type=sum)
 
-These fields determine which aggregations are valid and which defaults are applied.
+These fields determine which aggregations are valid and which defaults are applied. Use
+**signoz_list_metrics** first only when discovering a metric name, inspecting catalog metadata, or
+supplying metadata manually.
 
 ---
 
@@ -55,7 +58,7 @@ Valid reduceTo values: sum, count, avg, min, max, last, median
 1. **rate/increase on a gauge** → Invalid. Rate measures change over time, but gauges represent instantaneous values. Use avg, latest, or sum instead.
 2. **timeAggregation on histogram** → Ignored. Histogram time aggregation is handled automatically by the backend. Only set spaceAggregation (p50-p99).
 3. **sum/avg/min/max spaceAggregation on histogram** → Invalid. Histograms must use percentile aggregations (p50, p75, p90, p95, p99).
-4. **Missing temporality for counters** → Always pass temporality from signoz_list_metrics. Cumulative vs delta affects how rate is computed.
+4. **Providing only metricType for a counter** → This bypasses metadata auto-fetch and can leave temporality or monotonicity unspecified. Either omit metricType so all metadata is fetched, or pass the matching values from signoz_list_metrics.
 
 ---
 
@@ -64,8 +67,8 @@ Valid reduceTo values: sum, count, avg, min, max, last, median
 When specifying groupBy fields, the fieldContext is auto-detected:
 
 **Resource attributes** (fieldContext="resource"):
-Prefixes: k8s., container., host., cloud., deployment., process.
-Examples: k8s.namespace.name, k8s.pod.name, host.name, container.id
+Prefixes: k8s., container., host., cloud., deployment., process., service., telemetry., os.
+Examples: k8s.namespace.name, host.name, container.id, service.name, os.type
 
 **Metric attributes** (fieldContext="attribute"):
 Everything else. Examples: service_name, http.method, status_code
@@ -79,7 +82,7 @@ You can combine multiple metric queries using formulas:
 - Define multiple queries with names like "A", "B", "C"
 - Reference them in a formula expression: "A / B * 100"
 - Both queries in a formula should ideally use the same groupBy fields for compatible label sets
-- Different metrics can have different types — each gets independent aggregation validation
+- Different metrics can have different types; each gets independent aggregation validation
 
 ### Formula Functions
 Supported: exp, log, ln, sqrt, sin, cos, tan, abs, ceil, floor
@@ -88,6 +91,19 @@ Supported: exp, log, ln, sqrt, sin, cos, tan, abs, ceil, floor
 Query A: http_errors_total (counter) → rate / sum
 Query B: http_requests_total (counter) → rate / sum
 Formula C: A / B * 100
+
+## Result Bounds and Ordering
+
+Every ` + "`builder_query`" + ` and ` + "`builder_formula`" + ` must include a positive limit and
+` + "`order: [{\"key\":{\"name\":\"__result\"},\"direction\":\"desc\"}]`" + ` unless the task intentionally
+needs another ordering. Standalone queries and formula results use ` + "`limit: 100`" + `. Queries referenced
+by a formula use ` + "`limit: 10000`" + ` because SigNoz limits each input before evaluating the formula;
+independent top-100 inputs can silently discard a high-ratio group. Narrow the filters/grouping if expected
+input cardinality can exceed 10000. The wire field is ` + "`order`" + `; dashboard/editor payloads use a
+different ` + "`orderBy`" + ` shape.
+
+For time_series queries with groupBy, limit selects top groups using the ordering across the entire time
+range, not each time bucket. A short-lived spike can therefore fall outside the selected groups.
 
 ---
 
@@ -106,6 +122,8 @@ Formula C: A / B * 100
         "signal": "metrics",
         "name": "A",
         "stepInterval": 60,
+        "limit": 100,
+        "order": [{"key": {"name": "__result"}, "direction": "desc"}],
         "aggregations": [{
           "metricName": "container.cpu.utilization",
           "temporality": "unspecified",
@@ -123,6 +141,8 @@ Formula C: A / B * 100
 ### Example 2: Counter — HTTP Request Rate
 ` + "```json" + `
 {
+  "start": 1711123200000,
+  "end": 1711209600000,
   "requestType": "time_series",
   "compositeQuery": {
     "queries": [{
@@ -131,6 +151,8 @@ Formula C: A / B * 100
         "signal": "metrics",
         "name": "A",
         "stepInterval": 60,
+        "limit": 100,
+        "order": [{"key": {"name": "__result"}, "direction": "desc"}],
         "aggregations": [{
           "metricName": "http_requests_total",
           "temporality": "cumulative",
@@ -147,6 +169,8 @@ Formula C: A / B * 100
 ### Example 3: Histogram — Latency P99
 ` + "```json" + `
 {
+  "start": 1711123200000,
+  "end": 1711209600000,
   "requestType": "time_series",
   "compositeQuery": {
     "queries": [{
@@ -155,6 +179,8 @@ Formula C: A / B * 100
         "signal": "metrics",
         "name": "A",
         "stepInterval": 60,
+        "limit": 100,
+        "order": [{"key": {"name": "__result"}, "direction": "desc"}],
         "aggregations": [{
           "metricName": "http_request_duration_seconds",
           "temporality": "delta",
@@ -171,6 +197,8 @@ Formula C: A / B * 100
 ### Example 4: Formula — Error Rate Percentage
 ` + "```json" + `
 {
+  "start": 1711123200000,
+  "end": 1711209600000,
   "requestType": "time_series",
   "compositeQuery": {
     "queries": [
@@ -180,6 +208,8 @@ Formula C: A / B * 100
           "signal": "metrics",
           "name": "A",
           "stepInterval": 60,
+          "limit": 10000,
+          "order": [{"key": {"name": "__result"}, "direction": "desc"}],
           "aggregations": [{
             "metricName": "http_errors_total",
             "temporality": "cumulative",
@@ -194,6 +224,8 @@ Formula C: A / B * 100
           "signal": "metrics",
           "name": "B",
           "stepInterval": 60,
+          "limit": 10000,
+          "order": [{"key": {"name": "__result"}, "direction": "desc"}],
           "aggregations": [{
             "metricName": "http_requests_total",
             "temporality": "cumulative",
@@ -207,7 +239,9 @@ Formula C: A / B * 100
         "spec": {
           "name": "C",
           "expression": "A / B * 100",
-          "legend": "error_rate_%"
+          "legend": "error_rate_%",
+          "limit": 100,
+          "order": [{"key": {"name": "__result"}, "direction": "desc"}]
         }
       }
     ]
@@ -220,7 +254,7 @@ Formula C: A / B * 100
 ## Cost Meter (SigNoz usage / billing metrics)
 
 Cost Meter is the data store for the metrics SigNoz meters and bills on. Today these are
-telemetry ingestion volume — logs, spans, and metric data points, by count and by bytes —
+telemetry ingestion volume (logs, spans, and metric data points, by count and by bytes),
 and the set evolves (it may include other billable usage, such as AI credit consumption, in
 future). They answer questions like "which services consume the most telemetry budget?" or
 "ingestion volume by environment week-over-week". These metrics live in a separate store and
@@ -228,10 +262,10 @@ are **not** visible in the default metrics store.
 
 To query them, set ` + "`source: \"meter\"`" + ` on the ` + "`builder_query`" + ` spec (a sibling of
 ` + "`name`" + ` and ` + "`signal`" + `), or pass ` + "`source=\"meter\"`" + ` to **signoz_query_metrics**. Omit
-` + "`source`" + ` (or leave it empty) for ordinary metrics. Everything else — filters, groupBy,
-aggregations, formulas — works exactly as for normal metrics.
+` + "`source`" + ` (or leave it empty) for ordinary metrics. Everything else (filters, groupBy,
+aggregations, formulas) works exactly as for normal metrics.
 
-Even log and span volume are queried this way — as metrics with ` + "`signal: \"metrics\"`" + ` and
+Even log and span volume are queried this way, as metrics with ` + "`signal: \"metrics\"`" + ` and
 ` + "`source: \"meter\"`" + `, not through the logs or traces tools.
 
 ### Hourly aggregation — use ` + "`stepInterval: 3600`" + `
@@ -241,17 +275,17 @@ example below). A smaller step adds no resolution and a query window shorter tha
 most the current, still-incomplete hour (the build tested returns it flagged ` + "`partial: true`" + `;
 some versions return no data). Use a window of at least a few hours. When **signoz_query_metrics**
 is called without ` + "`stepInterval`" + ` it sends none and the backend auto-derives roughly
-` + "`max(60, window/300)`" + ` seconds — below 3600 for any window shorter than ~12.5 days — so pass
+` + "`max(60, window/300)`" + ` seconds, below 3600 for any window shorter than ~12.5 days, so pass
 ` + "`stepInterval: 3600`" + ` explicitly for meter queries.
 
 ### Discover the current meter metrics
 
-Don't assume a fixed list — the meter metric set evolves. Call **signoz_list_metrics** with
+Don't assume a fixed list; the meter metric set evolves. Call **signoz_list_metrics** with
 ` + "`source=\"meter\"`" + ` for the authoritative, current set, with each metric's ` + "`type`" + `,
 ` + "`temporality`" + `, and ` + "`unit`" + `, then apply the normal per-type aggregation rules (see above).
-As of this writing the set is telemetry-ingestion counters (delta monotonic sums) — for
+As of this writing the set is telemetry-ingestion counters (delta monotonic sums), for
 example ` + "`signoz.meter.log.size`" + ` (bytes), ` + "`signoz.meter.span.count`" + `, and
-` + "`signoz.meter.metric.datapoint.size`" + ` — for which ` + "`timeAggregation: rate`" + ` or ` + "`increase`" + `
+` + "`signoz.meter.metric.datapoint.size`" + `, for which ` + "`timeAggregation: rate`" + ` or ` + "`increase`" + `
 with ` + "`spaceAggregation: sum`" + ` is correct. Verify type/unit per metric via signoz_list_metrics
 rather than relying on this example list.
 
@@ -261,6 +295,8 @@ Add a ` + "`groupBy`" + ` (e.g. a service or environment attribute) to break the
 dimension, just like any other metric.
 ` + "```json" + `
 {
+  "start": 1711123200000,
+  "end": 1711209600000,
   "requestType": "time_series",
   "compositeQuery": {
     "queries": [{
@@ -270,6 +306,8 @@ dimension, just like any other metric.
         "source": "meter",
         "name": "A",
         "stepInterval": 3600,
+        "limit": 100,
+        "order": [{"key": {"name": "__result"}, "direction": "desc"}],
         "aggregations": [{
           "metricName": "signoz.meter.log.size",
           "temporality": "delta",
