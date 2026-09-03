@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	expirable "github.com/hashicorp/golang-lru/v2/expirable"
 
@@ -23,6 +24,16 @@ type Handler struct {
 	basicAuthHeader string
 	meters          *otelpkg.Meters
 	docsIndex       *docsindex.IndexRegistry
+	// validationLogs rate-limits representative validation request WARNs per
+	// bounded tool/direction/path/constraint tuple; counters remain exact.
+	validationLogs sync.Map
+
+	// registrations tracks the names advertised through each composed SDK
+	// server. The official SDK stores registrations in maps and replaces a
+	// prior entry, so every production registration must pass through the
+	// checked helpers in registration.go.
+	registrationMu sync.RWMutex
+	registrations  map[registrationKey]struct{}
 
 	// clientOverride, when non-nil, is returned by GetClient instead of
 	// looking up the cache. This exists solely to support unit testing
@@ -49,7 +60,6 @@ func NewHandler(log *slog.Logger, cfg *config.Config) *Handler {
 	if n, err := util.NormalizeSigNozURL(cfg.URL); err == nil {
 		normalizedURL = n
 	}
-
 	return &Handler{
 		logger:          log,
 		clientCache:     expirable.NewLRU[string, *signozclient.SigNoz](cfg.ClientCacheSize, nil, cfg.ClientCacheTTL),
@@ -80,7 +90,7 @@ func (h *Handler) GetClient(ctx context.Context) (signozclient.Client, error) {
 		authHeader = "SIGNOZ-API-KEY"
 	}
 
-	cacheKey := util.HashTenantKey(apiKey, signozURL)
+	cacheKey := util.HashTenantKey(authHeader, apiKey, signozURL)
 
 	if cachedClient, ok := h.clientCache.Get(cacheKey); ok {
 		return cachedClient, nil

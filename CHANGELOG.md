@@ -11,6 +11,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+## [0.14.0] - 2026-09-02
+
+### Added
+- migrate saved view tools to v2 saved_views API (nerve-pod#100) ([#296](https://github.com/SigNoz/signoz-mcp-server/pull/296))
+
+### Changed
+- retire live resource templates ([#295](https://github.com/SigNoz/signoz-mcp-server/pull/295))
+
+### Documentation
+- remove AI-slop patterns and fix misreadings in client-visible copy ([#294](https://github.com/SigNoz/signoz-mcp-server/pull/294))
+
+### Other
+- port the Go e2e families to the Python harness ([#298](https://github.com/SigNoz/signoz-mcp-server/pull/298))
+- foundry-provisioned e2e harness and CI workflow ([#297](https://github.com/SigNoz/signoz-mcp-server/pull/297))
+
+## [0.13.0] - 2026-08-19
+
+### Added
+- migrate to the official Go SDK ([#286](https://github.com/SigNoz/signoz-mcp-server/pull/286))
+
+### Fixed
+- preserve recognized backend error guidance ([#289](https://github.com/SigNoz/signoz-mcp-server/pull/289))
+
+### Documentation
+- add Grok Build MCP configuration ([#292](https://github.com/SigNoz/signoz-mcp-server/pull/292))
+
+### Other
+- upgrade to go 1.26 ([#290](https://github.com/SigNoz/signoz-mcp-server/pull/290))
+- add selected official conformance ([#287](https://github.com/SigNoz/signoz-mcp-server/pull/287))
+
+## [0.12.0] - 2026-08-12
+
+### Changed
+- validate credentials via service_accounts/me only ([#280](https://github.com/SigNoz/signoz-mcp-server/pull/280))
+
+## [0.11.0] - 2026-08-05
+
+### Added
+- capture failed MCP requests ([#276](https://github.com/SigNoz/signoz-mcp-server/pull/276))
+- add organization overview and auth recovery ([#267](https://github.com/SigNoz/signoz-mcp-server/pull/267))
+
+### Fixed
+- support policy routing and preflight reuse ([#264](https://github.com/SigNoz/signoz-mcp-server/pull/264))
+
+## [0.10.0] - 2026-07-27
+
+### Changed
+- **Breaking change:** dashboard tools now use the v2 Perses APIs and require SigNoz v0.135.0 or later ([#260](https://github.com/SigNoz/signoz-mcp-server/pull/260))
+
+### Documentation
+- streamline CLAUDE.md and extract plan templates ([#258](https://github.com/SigNoz/signoz-mcp-server/pull/258))
+
+### Other
+- bump google.golang.org/grpc from 1.79.3 to 1.82.1 ([#259](https://github.com/SigNoz/signoz-mcp-server/pull/259))
+
+## [0.9.0] - 2026-07-22
+
+### Added
+- add tier 1 MCP contract guardrails ([#249](https://github.com/SigNoz/signoz-mcp-server/pull/249))
+- accurate MCP tool annotations — explicit readOnly/destructive/idempotent triples with pinned inventory test ([#245](https://github.com/SigNoz/signoz-mcp-server/pull/245))
+- add key-not-found recovery guidance and missingKeys error field ([#244](https://github.com/SigNoz/signoz-mcp-server/pull/244))
+- add explicit limits and ordering ([#241](https://github.com/SigNoz/signoz-mcp-server/pull/241))
+
+### Fixed
+- code tool error results ([#256](https://github.com/SigNoz/signoz-mcp-server/pull/256))
+- enforce wire-contract budgets ([#247](https://github.com/SigNoz/signoz-mcp-server/pull/247))
+- classify expired-workspace 404s as permanent instance-not-found errors ([#243](https://github.com/SigNoz/signoz-mcp-server/pull/243))
+- stop logging expected subscribe rejections and client cancellations at ERROR ([#242](https://github.com/SigNoz/signoz-mcp-server/pull/242))
+- align service version across signals ([#240](https://github.com/SigNoz/signoz-mcp-server/pull/240))
+
+### Changed
+- clarify full catalog metadata ([#248](https://github.com/SigNoz/signoz-mcp-server/pull/248))
+
+### Documentation
+- add best-practices guide ([#255](https://github.com/SigNoz/signoz-mcp-server/pull/255))
+
+### Other
+- add Inspector protocol CI ([#254](https://github.com/SigNoz/signoz-mcp-server/pull/254))
+- pre-release v0.8.0 ([#239](https://github.com/SigNoz/signoz-mcp-server/pull/239))
+
+## [0.8.0] - 2026-07-15
+
+### Added
+- migrate get_alert_history to v2 rule-history API ([#235](https://github.com/SigNoz/signoz-mcp-server/pull/235))
+- upgrade mcp-go to v0.56.0 with shadow-mode schema validation ([#231](https://github.com/SigNoz/signoz-mcp-server/pull/231))
+
+### Fixed
+- align MCP telemetry and OAuth guidance ([#237](https://github.com/SigNoz/signoz-mcp-server/pull/237))
+- deduplicate docs corpus and improve ranking ([#233](https://github.com/SigNoz/signoz-mcp-server/pull/233))
+
+## [0.7.0] - 2026-07-07
+
+### Added
+- add signoz_check_metric_cardinality tool ([#208](https://github.com/SigNoz/signoz-mcp-server/pull/208))
+- add signoz_check_metric_usage tool ([#205](https://github.com/SigNoz/signoz-mcp-server/pull/205))
+
+### Fixed
+- classify upstream authz errors ([#227](https://github.com/SigNoz/signoz-mcp-server/pull/227))
+- migrate trace fields to snake_case ([#225](https://github.com/SigNoz/signoz-mcp-server/pull/225))
+
+### Other
+- bump golang.org/x/net from 0.51.0 to 0.55.0 ([#228](https://github.com/SigNoz/signoz-mcp-server/pull/228))
+
+## [0.6.0] - 2026-06-25
+
+### Added
+- resolve K1-K5 — units, window, limit, requestType, id naming (Family E, #366) ([#221](https://github.com/SigNoz/signoz-mcp-server/pull/221))
+- harmonize param schema, types & descriptions (Family D, #367) ([#220](https://github.com/SigNoz/signoz-mcp-server/pull/220))
+- JSON-first output + structuredContent + error codes (Family C, #365) ([#219](https://github.com/SigNoz/signoz-mcp-server/pull/219))
+- fix silent-failures across read/write tools (Family A, #363) ([#217](https://github.com/SigNoz/signoz-mcp-server/pull/217))
+- add signoz_get_top_metrics tool for ingestion cost analysis ([#196](https://github.com/SigNoz/signoz-mcp-server/pull/196))
+- add per-row webUrl deep links to signoz_search_traces ([#206](https://github.com/SigNoz/signoz-mcp-server/pull/206))
+
+### Fixed
+- emit VALIDATION_FAILED on remaining read-tool validation paths ([#222](https://github.com/SigNoz/signoz-mcp-server/pull/222))
+- honor ingress header for user/session tokens ([#223](https://github.com/SigNoz/signoz-mcp-server/pull/223))
+- author typed-struct field descriptions in the native jsonschema tag ([#214](https://github.com/SigNoz/signoz-mcp-server/pull/214))
+- standardize filter-expression param on `filter` (accept legacy `query` alias) ([#213](https://github.com/SigNoz/signoz-mcp-server/pull/213))
+- prevent nil-Arguments panic in MCP tool handlers ([#207](https://github.com/SigNoz/signoz-mcp-server/pull/207))
+
+### Changed
+- converge error/validation strings onto shared helpers (Family B, #364) ([#218](https://github.com/SigNoz/signoz-mcp-server/pull/218))
+
+### Documentation
+- add agent-skills sync check and Git/PR conventions to CLAUDE.md ([#215](https://github.com/SigNoz/signoz-mcp-server/pull/215))
+
+### CI
+- auto-publish server.json to the MCP Registry on release ([#209](https://github.com/SigNoz/signoz-mcp-server/pull/209))
+
+## [0.5.1] - 2026-06-17
+
+### Other
+- [codex] Align docs tool registration parity ([#203](https://github.com/SigNoz/signoz-mcp-server/pull/203))
+- post-release v0.5.0 ([#202](https://github.com/SigNoz/signoz-mcp-server/pull/202))
+
+## [0.5.0] - 2026-06-16
+
+### Added
+- add webUrl resource deep links to tool outputs ([#197](https://github.com/SigNoz/signoz-mcp-server/pull/197))
+
+### Fixed
+- file Cost Meter saved views under sourcePage "meter" ([#200](https://github.com/SigNoz/signoz-mcp-server/pull/200))
+
+### Other
+- [codex] Add instant API key help tooltip ([#198](https://github.com/SigNoz/signoz-mcp-server/pull/198))
+
 ## [0.4.1] - 2026-05-20
 
 ### Fixed
@@ -225,3 +382,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.2.1...v0.3.0
 [0.4.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.3.0...v0.4.0
 [0.4.1]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.4.0...v0.4.1
+[0.5.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.4.2...v0.5.0
+[0.5.1]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.5.0...v0.5.1
+[0.6.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.5.1...v0.6.0
+[0.7.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.6.0...v0.7.0
+[0.8.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.7.0...v0.8.0
+[0.9.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.8.0...v0.9.0
+[0.10.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.9.0...v0.10.0
+[0.11.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.10.0...v0.11.0
+[0.12.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.11.0...v0.12.0
+[0.13.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.12.0...v0.13.0
+[0.14.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.13.0...v0.14.0

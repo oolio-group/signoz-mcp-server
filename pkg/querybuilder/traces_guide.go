@@ -5,46 +5,65 @@ const TracesQueryBuilderGuide = `
 
 == FILTER EXPRESSION FORMAT ==
 
-Filters are a STRING expression in filter.expression — NOT a structured {op, items} object.
+Filters are a STRING expression in filter.expression, NOT a structured {op, items} object.
 
-CORRECT:   "filter": {"expression": "hasError = true AND k8s.namespace.name = 'my-ns'"}
+CORRECT:   "filter": {"expression": "has_error = true AND k8s.namespace.name = 'my-ns'"}
 INCORRECT: "filter": {"op": "AND", "items": [...]}
 
-Operators: =  !=  >  >=  <  <=  IN  NOT IN  LIKE  NOT LIKE  EXISTS  NOT EXISTS
+Operators: =  !=  >  >=  <  <=  IN  NOT IN  LIKE  NOT LIKE  ILIKE  NOT ILIKE  CONTAINS  NOT CONTAINS  REGEXP  NOT REGEXP  BETWEEN  NOT BETWEEN  EXISTS  NOT EXISTS
 Combine:   AND  OR  (use parentheses for precedence)
 
 Examples:
-  hasError = true
-  durationNano > 500000000
-  statusCodeString = 'STATUS_CODE_ERROR'
+  has_error = true
+  duration_nano > 500000000
+  status_code_string = 'Error'
   name LIKE '%payment%'
-  hasError = true AND k8s.namespace.name = 'prod'
-  (hasError = true OR durationNano > 1000000000) AND service.name = 'checkout'
+  has_error = true AND k8s.namespace.name = 'prod'
+  (has_error = true OR duration_nano > 1000000000) AND service.name = 'checkout'
 
-== FIELD NAMES — TWO CATEGORIES ==
+== FIELD DISCOVERY ==
 
---- 1. Built-in span columns (camelCase, NO fieldContext) ---
+Unknown keys hard-error. Built-in span columns are stable, but resource and span/tag attributes depend
+on this workspace's instrumentation. Do not guess unfamiliar field names. Discover keys, then confirm
+their observed values before filtering:
+  signoz_get_field_keys(signal="traces", fieldContext="span")
+  signoz_get_field_keys(signal="traces", fieldContext="resource")
+  signoz_get_field_keys(signal="traces", fieldContext="attribute")
+  signoz_get_field_values(signal="traces", name="<field>", fieldContext="<matching context>")
 
-Use these directly by name in filter expressions and selectFields without fieldContext:
+The fieldContext value "tag" is accepted as an alias for "attribute" by the discovery tools; Query
+Builder selectFields and groupBy use "tag". The resource and tag names below are common examples, not
+a complete catalog for every workspace.
 
-  hasError           bool      — whether the span has an error
-  statusMessage      string    — OTel status message
-  statusCodeString   string    — e.g. "STATUS_CODE_ERROR", "STATUS_CODE_OK"
-  statusCode         int64     — numeric status code
-  durationNano       int64     — span duration in nanoseconds
-  traceID            string    — trace identifier
-  spanID             string    — span identifier
-  name               string    — span/operation name
-  timestamp          datetime  — span start timestamp
-  httpMethod         string    — HTTP method
-  httpUrl            string    — HTTP URL
-  spanKind           string    — SPAN_KIND_SERVER, SPAN_KIND_CLIENT, etc.
-  responseStatusCode string    — HTTP response status as string
+== FIELD NAMES — THREE CATEGORIES ==
 
-selectFields entry (no fieldContext needed):
-  {"name": "hasError", "fieldDataType": "bool", "signal": "traces"}
-  {"name": "durationNano", "fieldDataType": "int64", "signal": "traces"}
-  {"name": "name", "fieldDataType": "string", "signal": "traces"}
+--- 1. Built-in span columns (snake_case, fieldContext: "span") ---
+
+Use these directly by name in filter expressions. In selectFields, use fieldContext "span"
+to make the built-in/span-column intent explicit:
+
+  has_error            bool      — whether the span has an error
+  status_message       string    — OTel status message
+  status_code_string   string    — span status: 'Ok', 'Error', or 'Unset' (prefer has_error = true for errors)
+  status_code          number    — numeric OTel status code
+  duration_nano        number    — span duration in nanoseconds
+  trace_id             string    — trace identifier
+  span_id              string    — span identifier
+  parent_span_id       string    — parent span identifier
+  name                 string    — span/operation name
+  timestamp            number    — span start timestamp
+  http_method          string    — HTTP method
+  http_url             string    — HTTP URL
+  kind_string          string    — 'Server', 'Client', 'Internal', 'Producer', 'Consumer'
+  response_status_code string    — HTTP response status as string; do not use for numeric comparisons
+
+For numeric HTTP status comparisons, use a numeric span/tag attribute such as
+attribute.http.response.status_code after verifying it exists for your data.
+
+selectFields entry:
+  {"name": "has_error", "fieldDataType": "bool", "signal": "traces", "fieldContext": "span"}
+  {"name": "duration_nano", "fieldDataType": "number", "signal": "traces", "fieldContext": "span"}
+  {"name": "name", "fieldDataType": "string", "signal": "traces", "fieldContext": "span"}
 
 --- 2. Resource attributes (dot notation, fieldContext: "resource") ---
 
@@ -66,14 +85,27 @@ selectFields entry (fieldContext: "resource" required):
 
 OTel span attributes set per-span:
 
-  http.status_code   int64  — HTTP status code attribute
+  http.response.status_code number — HTTP status code attribute
   db.system          string — database system (e.g. "postgresql")
   db.operation       string — database operation
   rpc.method         string — RPC method name
   messaging.system   string — messaging system (e.g. "kafka")
 
 selectFields entry (fieldContext: "tag" required):
-  {"name": "http.status_code", "fieldDataType": "int64", "signal": "traces", "fieldContext": "tag"}
+  {"name": "http.response.status_code", "fieldDataType": "number", "signal": "traces", "fieldContext": "tag"}
+
+== RESULT BOUNDS AND ORDERING ==
+
+Every builder_query must include a positive limit and explicit order.
+
+  raw / trace: limit 100; order by timestamp desc
+  scalar:      limit 100 groups; order by the primary aggregation desc unless the task needs another order
+  time_series: limit 100 groups; order by the primary aggregation desc unless the task needs another order
+
+For time_series queries with groupBy, the limit selects top groups using the ordering across the ENTIRE
+time range, not each time bucket. A short-lived spike can fall outside the selected groups. Use an explicit
+smaller limit only when the user asks for top N; use a larger limit when completeness
+matters more than response size.
 
 == COMPLETE WORKING EXAMPLES ==
 
@@ -92,19 +124,19 @@ selectFields entry (fieldContext: "tag" required):
           "name": "A",
           "signal": "traces",
           "disabled": false,
-          "limit": 10,
+          "limit": 100,
           "offset": 0,
           "order": [{"key": {"name": "timestamp"}, "direction": "desc"}],
           "having": {"expression": ""},
-          "filter": {"expression": "hasError = true AND k8s.namespace.name = 'prod'"},
+          "filter": {"expression": "has_error = true AND k8s.namespace.name = 'prod'"},
           "selectFields": [
             {"name": "service.name", "fieldDataType": "string", "signal": "traces", "fieldContext": "resource"},
-            {"name": "name",         "fieldDataType": "string", "signal": "traces"},
-            {"name": "hasError",     "fieldDataType": "bool",   "signal": "traces"},
-            {"name": "durationNano", "fieldDataType": "int64",  "signal": "traces"},
-            {"name": "statusMessage","fieldDataType": "string", "signal": "traces"},
-            {"name": "traceID",      "fieldDataType": "string", "signal": "traces"},
-            {"name": "spanID",       "fieldDataType": "string", "signal": "traces"}
+            {"name": "name",          "fieldDataType": "string", "signal": "traces", "fieldContext": "span"},
+            {"name": "has_error",     "fieldDataType": "bool",   "signal": "traces", "fieldContext": "span"},
+            {"name": "duration_nano", "fieldDataType": "number", "signal": "traces", "fieldContext": "span"},
+            {"name": "status_message","fieldDataType": "string", "signal": "traces", "fieldContext": "span"},
+            {"name": "trace_id",      "fieldDataType": "string", "signal": "traces", "fieldContext": "span"},
+            {"name": "span_id",       "fieldDataType": "string", "signal": "traces", "fieldContext": "span"}
           ]
         }
       }
@@ -114,13 +146,13 @@ selectFields entry (fieldContext: "tag" required):
   "variables": {}
 }
 
---- Example 2: Aggregation query — error count grouped by service (requestType: "aggregate") ---
+--- Example 2: Aggregation query — error count grouped by service (requestType: "scalar") ---
 
 {
   "schemaVersion": "v1",
   "start": 1756386047000,
   "end": 1756387847000,
-  "requestType": "aggregate",
+  "requestType": "scalar",
   "compositeQuery": {
     "queries": [
       {
@@ -129,10 +161,10 @@ selectFields entry (fieldContext: "tag" required):
           "name": "A",
           "signal": "traces",
           "disabled": false,
-          "limit": 20,
+          "limit": 100,
           "offset": 0,
           "having": {"expression": ""},
-          "filter": {"expression": "hasError = true"},
+          "filter": {"expression": "has_error = true"},
           "aggregations": [
             {"expression": "count()"}
           ],
@@ -164,10 +196,13 @@ selectFields entry (fieldContext: "tag" required):
           "signal": "traces",
           "disabled": false,
           "stepInterval": 60,
+          "limit": 100,
+          "offset": 0,
+          "order": [{"key": {"name": "p99(duration_nano)"}, "direction": "desc"}],
           "having": {"expression": ""},
           "filter": {"expression": "service.name = 'checkout'"},
           "aggregations": [
-            {"expression": "p99(durationNano)"}
+            {"expression": "p99(duration_nano)"}
           ]
         }
       }
@@ -179,16 +214,20 @@ selectFields entry (fieldContext: "tag" required):
 
 == TIMESTAMP FORMAT ==
 
-"start" and "end" are Unix milliseconds (13-digit). Example: 1756386047000
+The top-level "start" and "end" request fields are Unix milliseconds (13-digit), e.g. 1756386047000.
+Prefer start/end to bound the time window. The built-in "timestamp" COLUMN is nanosecond-scale
+(DateTime64(9)), so do NOT put a millisecond value in an inline "timestamp" filter; use start/end instead.
 
 == QUICK REFERENCE ==
 
 | Need                        | Field              | fieldContext  |
 |-----------------------------|--------------------|---------------|
-| Is error span?              | hasError           | (none)        |
-| Span duration               | durationNano       | (none)        |
-| Operation name              | name               | (none)        |
+| Is error span?              | has_error          | span          |
+| Span duration               | duration_nano      | span          |
+| Operation name              | name               | span          |
+| Trace ID                    | trace_id           | span          |
+| Span ID                     | span_id            | span          |
 | Service name                | service.name       | resource      |
 | Kubernetes namespace        | k8s.namespace.name | resource      |
-| HTTP response code (attr)   | http.status_code   | tag           |
+| HTTP response code (attr)   | http.response.status_code | tag   |
 `

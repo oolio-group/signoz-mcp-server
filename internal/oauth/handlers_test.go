@@ -35,7 +35,7 @@ func newBufferedLogger(buf *bytes.Buffer, level slog.Level) *slog.Logger {
 
 func TestOAuthAuthorizationFlow(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -214,30 +214,20 @@ func TestOAuthAuthorizationFlow(t *testing.T) {
 	}
 }
 
-// TestOAuthAuthorizationFlowServiceAccountFallback verifies the full OAuth
-// authorize flow succeeds when user/me returns 404 (service-account key) and
-// the validation falls back to /api/v1/service_accounts/me.
-func TestOAuthAuthorizationFlowServiceAccountFallback(t *testing.T) {
+// TestAuthorizeSubmitRejectsJSON404FromServiceAccountsMe verifies a JSON 404
+// from the service-account endpoint is surfaced as an unreachable-instance
+// error rather than being retried against another endpoint.
+func TestAuthorizeSubmitRejectsJSON404FromServiceAccountsMe(t *testing.T) {
+	saRequests := 0
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/user/me":
-			// Service-account key triggers 404 on user/me.
-			w.WriteHeader(http.StatusNotFound)
-		case "/api/v1/service_accounts/me":
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if r.Header.Get("SIGNOZ-API-KEY") != "snz-api-key" {
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write([]byte(`{"status":"error","message":"Unauthorized"}`))
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"success","data":{}}`))
-		default:
-			http.NotFound(w, r)
+		if r.URL.Path != "/api/v1/service_accounts/me" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
+		saRequests++
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"status":"error","message":"not found"}`))
 	}))
 	defer signozServer.Close()
 
@@ -276,7 +266,7 @@ func TestOAuthAuthorizationFlowServiceAccountFallback(t *testing.T) {
 	// GET /oauth/authorize to obtain CSRF token.
 	authorizeURL := "/oauth/authorize?response_type=code&client_id=" + url.QueryEscape(registered.ClientID) +
 		"&redirect_uri=" + url.QueryEscape("http://127.0.0.1:4567/callback") +
-		"&state=state-fallback&code_challenge=" + url.QueryEscape(challenge) +
+		"&state=state-sa-404&code_challenge=" + url.QueryEscape(challenge) +
 		"&code_challenge_method=S256"
 	authorizeRR := httptest.NewRecorder()
 	mux.ServeHTTP(authorizeRR, httptest.NewRequest(http.MethodGet, authorizeURL, nil))
@@ -291,12 +281,11 @@ func TestOAuthAuthorizationFlowServiceAccountFallback(t *testing.T) {
 	}
 	csrfCookie := authorizeRR.Result().Cookies()[0]
 
-	// POST /oauth/authorize — this is the step that validates credentials
-	// via the fallback path (service_accounts/me 404 → user/me 200).
+	// POST /oauth/authorize — this is the step that validates credentials.
 	form := url.Values{
 		"client_id":             {registered.ClientID},
 		"redirect_uri":          {"http://127.0.0.1:4567/callback"},
-		"state":                 {"state-fallback"},
+		"state":                 {"state-sa-404"},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"csrf_token":            {matches[1]},
@@ -309,26 +298,23 @@ func TestOAuthAuthorizationFlowServiceAccountFallback(t *testing.T) {
 	submitRR := httptest.NewRecorder()
 	mux.ServeHTTP(submitRR, submitReq)
 
-	if submitRR.Code != http.StatusFound {
-		t.Fatalf("authorize POST status = %d, want 302; body = %s", submitRR.Code, submitRR.Body.String())
+	if submitRR.Code != http.StatusBadGateway {
+		t.Fatalf("authorize POST status = %d, want %d; body = %s", submitRR.Code, http.StatusBadGateway, submitRR.Body.String())
 	}
-
-	location := submitRR.Header().Get("Location")
-	redirected, err := url.Parse(location)
-	if err != nil {
-		t.Fatalf("parse redirect: %v", err)
+	if submitRR.Header().Get("Location") != "" {
+		t.Fatalf("unexpected redirect location %q", submitRR.Header().Get("Location"))
 	}
-	if redirected.Query().Get("state") != "state-fallback" {
-		t.Fatalf("state = %q, want %q", redirected.Query().Get("state"), "state-fallback")
+	if !strings.Contains(submitRR.Body.String(), "We couldn&#39;t reach that SigNoz instance. Check the URL and try again.") {
+		t.Fatalf("authorize POST body = %s", submitRR.Body.String())
 	}
-	if redirected.Query().Get("code") == "" {
-		t.Fatalf("authorization code missing from redirect %q", location)
+	if saRequests != 1 {
+		t.Fatalf("service_accounts/me calls = %d, want 1", saRequests)
 	}
 }
 
 func TestAuthorizeSubmitRejectsInvalidSigNozCredentials(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -417,7 +403,7 @@ func TestAuthorizeSubmitRejectsInvalidSigNozCredentials(t *testing.T) {
 
 func TestAuthorizeSubmitStripsSigNozURLPathQueryFragment(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -545,7 +531,7 @@ func TestRegisterClientRejectsUnsupportedCustomRedirectScheme(t *testing.T) {
 
 func TestAuthorizePageUsesIssuerPathPrefixForFormAndCSRFCookie(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -661,7 +647,7 @@ func (c *capturingEmitter) snapshot() []capturedEmission {
 
 func TestOAuthEmitterFiresOnAuthorizeAndTokenIssue(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -834,7 +820,7 @@ func TestWriteOAuthErrorRecordsFailureMetric(t *testing.T) {
 
 func TestAuthorizeSubmitUnauthorizedRecordsFailureMetric(t *testing.T) {
 	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user/me" {
+		if r.URL.Path != "/api/v1/service_accounts/me" {
 			http.NotFound(w, r)
 			return
 		}
@@ -930,6 +916,230 @@ func TestAuthorizeSubmitUnauthorizedRecordsFailureMetric(t *testing.T) {
 	statusAttr, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
 	if !ok || statusAttr.AsInt64() != http.StatusUnauthorized {
 		t.Fatalf("http.response.status_code = %v, want %d", statusAttr, http.StatusUnauthorized)
+	}
+	tenantAttr, ok := dp.Attributes.Value(attribute.Key("mcp.tenant_url"))
+	if !ok || tenantAttr.AsString() != signozServer.URL {
+		t.Fatalf("mcp.tenant_url = %v, want %q", tenantAttr, signozServer.URL)
+	}
+}
+
+// TestAuthorizeSubmitExpiredWorkspaceRendersInstanceNotFound covers the
+// expired/deactivated cloud workspace case: the instance URL answers with the
+// ingress's HTML 404 page instead of a SigNoz API response. The user must get
+// a permanent error pointing at workspace status — not "try again" — and the
+// failure must be tagged instance_not_found with tenant attribution.
+func TestAuthorizeSubmitExpiredWorkspaceRendersInstanceNotFound(t *testing.T) {
+	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>404 : This page does not exist :/</title></head>
+<body>Either the workspace has expired or the workspace does not exist.</body></html>`))
+	}))
+	defer signozServer.Close()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() {
+		if err := meterProvider.Shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown meter provider: %v", err)
+		}
+	}()
+
+	meters, err := otelpkg.NewMeters(meterProvider)
+	if err != nil {
+		t.Fatalf("new meters: %v", err)
+	}
+
+	cfg := &config.Config{
+		OAuthEnabled:     true,
+		OAuthTokenSecret: "0123456789abcdef0123456789abcdef",
+		OAuthIssuerURL:   "https://mcp.example.com",
+		AuthCodeTTL:      10 * time.Minute,
+	}
+
+	handler := NewHandler(logpkg.New("error"), cfg, nil, meters)
+	clientID, err := EncryptClientID([]string{"http://127.0.0.1:4567/callback"}, "Claude", time.Now().UTC(), []byte(cfg.OAuthTokenSecret))
+	if err != nil {
+		t.Fatalf("EncryptClientID() error = %v", err)
+	}
+
+	authorizeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+
+			"&redirect_uri="+url.QueryEscape("http://127.0.0.1:4567/callback")+
+			"&state=state-123&code_challenge=challenge&code_challenge_method=S256",
+		nil,
+	)
+	authorizeRR := httptest.NewRecorder()
+	handler.HandleAuthorizePage(authorizeRR, authorizeReq)
+
+	re := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
+	matches := re.FindStringSubmatch(authorizeRR.Body.String())
+	if len(matches) != 2 {
+		t.Fatalf("csrf token not found in authorize page: %s", authorizeRR.Body.String())
+	}
+
+	form := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://127.0.0.1:4567/callback"},
+		"state":                 {"state-123"},
+		"code_challenge":        {"challenge"},
+		"code_challenge_method": {"S256"},
+		"csrf_token":            {matches[1]},
+		"signoz_url":            {signozServer.URL},
+		"api_key":               {"some-api-key"},
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/authorize", bytes.NewBufferString(form.Encode()))
+	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	submitReq.AddCookie(authorizeRR.Result().Cookies()[0])
+	submitRR := httptest.NewRecorder()
+	handler.HandleAuthorizeSubmit(submitRR, submitReq)
+
+	if submitRR.Code != http.StatusNotFound {
+		t.Fatalf("authorize POST status = %d, want %d, body = %s", submitRR.Code, http.StatusNotFound, submitRR.Body.String())
+	}
+	if !strings.Contains(submitRR.Body.String(), "the workspace may have been deactivated") {
+		t.Fatalf("authorize POST body should point at workspace status, body = %s", submitRR.Body.String())
+	}
+	if strings.Contains(submitRR.Body.String(), "Check the URL and try again") {
+		t.Fatalf("authorize POST body should not suggest retrying, body = %s", submitRR.Body.String())
+	}
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+
+	failures, found := oteltest.FindInt64SumMetric(metrics, "mcp.oauth.failures")
+	if !found {
+		t.Fatal("mcp.oauth.failures metric not found")
+	}
+	if len(failures.DataPoints) != 1 {
+		t.Fatalf("mcp.oauth.failures datapoints = %d, want 1", len(failures.DataPoints))
+	}
+
+	dp := failures.DataPoints[0]
+	codeAttr, ok := dp.Attributes.Value(attribute.Key("oauth.error_code"))
+	if !ok || codeAttr.AsString() != "invalid_request" {
+		t.Fatalf("oauth.error_code = %v, want invalid_request", codeAttr)
+	}
+	statusAttr, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
+	if !ok || statusAttr.AsInt64() != http.StatusNotFound {
+		t.Fatalf("http.response.status_code = %v, want %d", statusAttr, http.StatusNotFound)
+	}
+	reasonAttr, ok := dp.Attributes.Value(attribute.Key("mcp.auth.failure_reason"))
+	if !ok || reasonAttr.AsString() != "instance_not_found" {
+		t.Fatalf("mcp.auth.failure_reason = %v, want instance_not_found", reasonAttr)
+	}
+	tenantAttr, ok := dp.Attributes.Value(attribute.Key("mcp.tenant_url"))
+	if !ok || tenantAttr.AsString() != signozServer.URL {
+		t.Fatalf("mcp.tenant_url = %v, want %q", tenantAttr, signozServer.URL)
+	}
+}
+
+// TestAuthorizeSubmitTransientFailureStaysTemporarilyUnavailable pins the
+// transient path: a 503 from the instance keeps the retryable 502
+// temporarily_unavailable response, now tagged instance_unreachable.
+func TestAuthorizeSubmitTransientFailureStaysTemporarilyUnavailable(t *testing.T) {
+	signozServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"error","message":"upgrade in progress"}`))
+	}))
+	defer signozServer.Close()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() {
+		if err := meterProvider.Shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown meter provider: %v", err)
+		}
+	}()
+
+	meters, err := otelpkg.NewMeters(meterProvider)
+	if err != nil {
+		t.Fatalf("new meters: %v", err)
+	}
+
+	cfg := &config.Config{
+		OAuthEnabled:     true,
+		OAuthTokenSecret: "0123456789abcdef0123456789abcdef",
+		OAuthIssuerURL:   "https://mcp.example.com",
+		AuthCodeTTL:      10 * time.Minute,
+	}
+
+	handler := NewHandler(logpkg.New("error"), cfg, nil, meters)
+	clientID, err := EncryptClientID([]string{"http://127.0.0.1:4567/callback"}, "Claude", time.Now().UTC(), []byte(cfg.OAuthTokenSecret))
+	if err != nil {
+		t.Fatalf("EncryptClientID() error = %v", err)
+	}
+
+	authorizeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+
+			"&redirect_uri="+url.QueryEscape("http://127.0.0.1:4567/callback")+
+			"&state=state-123&code_challenge=challenge&code_challenge_method=S256",
+		nil,
+	)
+	authorizeRR := httptest.NewRecorder()
+	handler.HandleAuthorizePage(authorizeRR, authorizeReq)
+
+	re := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
+	matches := re.FindStringSubmatch(authorizeRR.Body.String())
+	if len(matches) != 2 {
+		t.Fatalf("csrf token not found in authorize page: %s", authorizeRR.Body.String())
+	}
+
+	form := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://127.0.0.1:4567/callback"},
+		"state":                 {"state-123"},
+		"code_challenge":        {"challenge"},
+		"code_challenge_method": {"S256"},
+		"csrf_token":            {matches[1]},
+		"signoz_url":            {signozServer.URL},
+		"api_key":               {"some-api-key"},
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/authorize", bytes.NewBufferString(form.Encode()))
+	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	submitReq.AddCookie(authorizeRR.Result().Cookies()[0])
+	submitRR := httptest.NewRecorder()
+	handler.HandleAuthorizeSubmit(submitRR, submitReq)
+
+	if submitRR.Code != http.StatusBadGateway {
+		t.Fatalf("authorize POST status = %d, want %d, body = %s", submitRR.Code, http.StatusBadGateway, submitRR.Body.String())
+	}
+	if !strings.Contains(submitRR.Body.String(), "Check the URL and try again") {
+		t.Fatalf("authorize POST body should keep the retry guidance, body = %s", submitRR.Body.String())
+	}
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+
+	failures, found := oteltest.FindInt64SumMetric(metrics, "mcp.oauth.failures")
+	if !found {
+		t.Fatal("mcp.oauth.failures metric not found")
+	}
+	if len(failures.DataPoints) != 1 {
+		t.Fatalf("mcp.oauth.failures datapoints = %d, want 1", len(failures.DataPoints))
+	}
+
+	dp := failures.DataPoints[0]
+	codeAttr, ok := dp.Attributes.Value(attribute.Key("oauth.error_code"))
+	if !ok || codeAttr.AsString() != "temporarily_unavailable" {
+		t.Fatalf("oauth.error_code = %v, want temporarily_unavailable", codeAttr)
+	}
+	reasonAttr, ok := dp.Attributes.Value(attribute.Key("mcp.auth.failure_reason"))
+	if !ok || reasonAttr.AsString() != "instance_unreachable" {
+		t.Fatalf("mcp.auth.failure_reason = %v, want instance_unreachable", reasonAttr)
+	}
+	tenantAttr, ok := dp.Attributes.Value(attribute.Key("mcp.tenant_url"))
+	if !ok || tenantAttr.AsString() != signozServer.URL {
+		t.Fatalf("mcp.tenant_url = %v, want %q", tenantAttr, signozServer.URL)
 	}
 }
 

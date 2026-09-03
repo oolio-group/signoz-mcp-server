@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	mcp "github.com/SigNoz/signoz-mcp-server/internal/mcpcontract"
 )
 
 func TestParseSearchLogsArgs_LimitClamped(t *testing.T) {
@@ -51,16 +51,19 @@ func TestParseSearchTracesArgs_LimitClamped(t *testing.T) {
 func TestRawSearchResult_NoteIsSeparateBlock(t *testing.T) {
 	payload := []byte(`{"status":"success","data":[]}`)
 
-	notClamped := rawSearchResult(payload, false)
-	if len(notClamped.Content) != 1 {
-		t.Fatalf("not-clamped: want 1 content block, got %d", len(notClamped.Content))
+	// rawSearchResult always appends a completeness note (hasMore inference), so
+	// even an un-clamped result carries the JSON block plus one note block.
+	notClamped := rawSearchResult(testCtx(), nil, "signoz_search_logs", payload, 100, 0, false)
+	if len(notClamped.Content) != 2 {
+		t.Fatalf("not-clamped: want 2 content blocks (JSON + completeness note), got %d", len(notClamped.Content))
 	}
 
-	clamped := rawSearchResult(payload, true)
-	if len(clamped.Content) != 2 {
-		t.Fatalf("clamped: want 2 content blocks, got %d", len(clamped.Content))
+	// Clamped: JSON block + clamp note + completeness note.
+	clamped := rawSearchResult(testCtx(), nil, "signoz_search_logs", payload, 100, 0, true)
+	if len(clamped.Content) != 3 {
+		t.Fatalf("clamped: want 3 content blocks, got %d", len(clamped.Content))
 	}
-	block0, ok := clamped.Content[0].(mcp.TextContent)
+	block0, ok := clamped.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("clamped: block 0 is %T, want mcp.TextContent", clamped.Content[0])
 	}
@@ -68,9 +71,9 @@ func TestRawSearchResult_NoteIsSeparateBlock(t *testing.T) {
 	if err := json.Unmarshal([]byte(block0.Text), &parsed); err != nil {
 		t.Fatalf("clamped: block 0 must be valid JSON, got %q (err: %v)", block0.Text, err)
 	}
-	block1, ok := clamped.Content[1].(mcp.TextContent)
+	block1, ok := clamped.Content[1].(*mcp.TextContent)
 	if !ok || !strings.Contains(block1.Text, "result limited to") {
-		t.Fatalf("clamped: block 1 should be the pagination note, got %#v", clamped.Content[1])
+		t.Fatalf("clamped: block 1 should be the clamp note, got %#v", clamped.Content[1])
 	}
 }
 
@@ -80,11 +83,11 @@ func TestRawSearchResult_NoteIsSeparateBlock(t *testing.T) {
 func TestAggregateResult_SurfaceSeparateNote(t *testing.T) {
 	payload := []byte(`{"status":"success","data":[]}`)
 
-	clamped := aggregateResult(payload, true)
+	clamped := aggregateResult(testCtx(), nil, "signoz_aggregate_logs", payload, true)
 	if len(clamped.Content) != 2 {
 		t.Fatalf("clamped: want 2 content blocks, got %d", len(clamped.Content))
 	}
-	block0, ok := clamped.Content[0].(mcp.TextContent)
+	block0, ok := clamped.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("clamped: block 0 is %T, want mcp.TextContent", clamped.Content[0])
 	}
@@ -92,12 +95,12 @@ func TestAggregateResult_SurfaceSeparateNote(t *testing.T) {
 	if err := json.Unmarshal([]byte(block0.Text), &parsed); err != nil {
 		t.Fatalf("clamped: block 0 must be valid JSON, got %q (err: %v)", block0.Text, err)
 	}
-	block1, ok := clamped.Content[1].(mcp.TextContent)
+	block1, ok := clamped.Content[1].(*mcp.TextContent)
 	if !ok || !strings.Contains(block1.Text, "groups") {
 		t.Fatalf("clamped: block 1 should be the groups note, got %#v", clamped.Content[1])
 	}
 
-	if n := len(aggregateResult(payload, false).Content); n != 1 {
+	if n := len(aggregateResult(testCtx(), nil, "signoz_aggregate_logs", payload, false).Content); n != 1 {
 		t.Fatalf("not-clamped aggregate: want 1 content block, got %d", n)
 	}
 }

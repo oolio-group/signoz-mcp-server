@@ -160,3 +160,24 @@ GitHub issue #136 showed the "OTLP always on" decision was too sharp for self-ho
 
 ## Open Questions
 _(none — plan approved by Codex after 3 rounds; post-ship review findings addressed)_
+
+### 2026-07-15 — Docker image `service.version` parity
+- Follow-up review found that Make and GoReleaser injected `pkg/version.Version`, but the official Primus workflow passed empty `GO_BUILD_FLAGS` and the standalone Dockerfile had no version linker flag. Those images therefore exported the default `service.version=dev`.
+- Decision: tagged release builds inject the exact Git tag, which is also the published Docker tag; `main` builds inject the commit SHA so each deployment remains distinguishable. Standalone Docker builds accept an explicit `VERSION` build argument because an OCI image tag is not automatically available inside a Docker build.
+
+## Key Decisions & Discussion Log (continued)
+
+### 2026-07-15 — Independent review corrections
+- The initial workflow forwarded `github.ref_name` through `GO_BUILD_FLAGS`; Primus interpolates that input into a shell command, so flexible tag names could be interpreted as shell syntax. The workflow now passes only the repo-owned `$($MAKE info-version)` expression.
+- Primus's canonical `VERSION` is also the Docker image tag (`v0.8.1` for a release and `main-<shortsha>` for a main build), so injecting that value makes `service.version` match the image tag exactly.
+- GoReleaser now injects `{{.Tag}}` instead of `{{.Version}}`, preserving the leading `v` and keeping release binaries aligned with Docker images.
+
+### 2026-07-15 — `service.version` signal coverage
+- OpenTelemetry associates a `MeterProvider` resource with all metrics produced by its meters. The existing meter provider already receives the resource created with `semconv.ServiceVersion`, so metrics need regression coverage rather than an additional datapoint attribute.
+- Application logs are structured JSON on stderr, not records from an OpenTelemetry `LoggerProvider`. Decision: attach `version.Version` as the global `service.version` log field so every record carries the same build identity.
+
+### 2026-08-25 — Resource-template scope removed
+- `internal/handler/tools/resource_templates.go` was part of this plan's shipped slog migration and was later deleted by the evidence-backed `resource-template-deprecation` change. The observability design and shipped signals are otherwise unchanged.
+
+### 2026-08-25 — Status corrected to Done
+- User confirmed that the work represented by this plan is complete. The status was corrected from In Progress to Done; no implementation scope or prior decision was changed.
