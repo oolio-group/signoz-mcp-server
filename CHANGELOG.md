@@ -22,6 +22,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+
+## [0.14.1] - 2026-09-03
+
+### Added
+- migrate saved view tools to v2 saved_views API (nerve-pod#100) ([#296](https://github.com/oolio-group/signoz-mcp-server/pull/296))
+- migrate to the official Go SDK ([#286](https://github.com/oolio-group/signoz-mcp-server/pull/286))
+- capture failed MCP requests ([#276](https://github.com/oolio-group/signoz-mcp-server/pull/276))
+- add organization overview and auth recovery ([#267](https://github.com/oolio-group/signoz-mcp-server/pull/267))
+- migrate dashboard tools to v2 perses APIs ([#260](https://github.com/oolio-group/signoz-mcp-server/pull/260))
+- add tier 1 MCP contract guardrails ([#249](https://github.com/oolio-group/signoz-mcp-server/pull/249))
+- accurate MCP tool annotations — explicit readOnly/destructive/idempotent triples with pinned inventory test ([#245](https://github.com/oolio-group/signoz-mcp-server/pull/245))
+- add key-not-found recovery guidance and missingKeys error field ([#244](https://github.com/oolio-group/signoz-mcp-server/pull/244))
+- add explicit limits and ordering ([#241](https://github.com/oolio-group/signoz-mcp-server/pull/241))
+- migrate get_alert_history to v2 rule-history API ([#235](https://github.com/oolio-group/signoz-mcp-server/pull/235))
+- upgrade mcp-go to v0.56.0 with shadow-mode schema validation ([#231](https://github.com/oolio-group/signoz-mcp-server/pull/231))
+- add signoz_check_metric_cardinality tool ([#208](https://github.com/oolio-group/signoz-mcp-server/pull/208))
+- add signoz_check_metric_usage tool ([#205](https://github.com/oolio-group/signoz-mcp-server/pull/205))
+- resolve K1-K5 — units, window, limit, requestType, id naming (Family E, #366) ([#221](https://github.com/oolio-group/signoz-mcp-server/pull/221))
+- harmonize param schema, types & descriptions (Family D, #367) ([#220](https://github.com/oolio-group/signoz-mcp-server/pull/220))
+- JSON-first output + structuredContent + error codes (Family C, #365) ([#219](https://github.com/oolio-group/signoz-mcp-server/pull/219))
+- fix silent-failures across read/write tools (Family A, #363) ([#217](https://github.com/oolio-group/signoz-mcp-server/pull/217))
+- add signoz_get_top_metrics tool for ingestion cost analysis ([#196](https://github.com/oolio-group/signoz-mcp-server/pull/196))
+- add per-row webUrl deep links to signoz_search_traces ([#206](https://github.com/oolio-group/signoz-mcp-server/pull/206))
+
+### Fixed
+- preserve recognized backend error guidance ([#289](https://github.com/oolio-group/signoz-mcp-server/pull/289))
+- support policy routing and preflight reuse ([#264](https://github.com/oolio-group/signoz-mcp-server/pull/264))
+- code tool error results ([#256](https://github.com/oolio-group/signoz-mcp-server/pull/256))
+- enforce wire-contract budgets ([#247](https://github.com/oolio-group/signoz-mcp-server/pull/247))
+- classify expired-workspace 404s as permanent instance-not-found errors ([#243](https://github.com/oolio-group/signoz-mcp-server/pull/243))
+- stop logging expected subscribe rejections and client cancellations at ERROR ([#242](https://github.com/oolio-group/signoz-mcp-server/pull/242))
+- align service version across signals ([#240](https://github.com/oolio-group/signoz-mcp-server/pull/240))
+- align MCP telemetry and OAuth guidance ([#237](https://github.com/oolio-group/signoz-mcp-server/pull/237))
+- deduplicate corpus and improve ranking ([#233](https://github.com/oolio-group/signoz-mcp-server/pull/233))
+- classify upstream authz errors ([#227](https://github.com/oolio-group/signoz-mcp-server/pull/227))
+- migrate trace fields to snake_case ([#225](https://github.com/oolio-group/signoz-mcp-server/pull/225))
+- emit VALIDATION_FAILED on remaining read-tool validation paths ([#222](https://github.com/oolio-group/signoz-mcp-server/pull/222))
+- honor ingress header for user/session tokens ([#223](https://github.com/oolio-group/signoz-mcp-server/pull/223))
+- author typed-struct field descriptions in the native jsonschema tag ([#214](https://github.com/oolio-group/signoz-mcp-server/pull/214))
+- standardize filter-expression param on `filter` (accept legacy `query` alias) ([#213](https://github.com/oolio-group/signoz-mcp-server/pull/213))
+- prevent nil-Arguments panic in MCP tool handlers ([#207](https://github.com/oolio-group/signoz-mcp-server/pull/207))
+
+### Changed
+- retire live resource templates ([#295](https://github.com/oolio-group/signoz-mcp-server/pull/295))
+- validate credentials via service_accounts/me only ([#280](https://github.com/oolio-group/signoz-mcp-server/pull/280))
+- clarify full catalog metadata ([#248](https://github.com/oolio-group/signoz-mcp-server/pull/248))
+- converge error/validation strings onto shared helpers (Family B, #364) ([#218](https://github.com/oolio-group/signoz-mcp-server/pull/218))
+
+### Documentation
+- remove AI-slop patterns and fix misreadings in client-visible copy ([#294](https://github.com/oolio-group/signoz-mcp-server/pull/294))
+- add Grok Build MCP configuration ([#292](https://github.com/oolio-group/signoz-mcp-server/pull/292))
+- point installation instructions at fork's own releases
+- streamline CLAUDE.md and extract plan templates ([#258](https://github.com/oolio-group/signoz-mcp-server/pull/258))
+- add best-practices guide ([#255](https://github.com/oolio-group/signoz-mcp-server/pull/255))
+- add agent-skills sync check and Git/PR conventions to CLAUDE.md ([#215](https://github.com/oolio-group/signoz-mcp-server/pull/215))
+
+### CI
+- auto-publish server.json to the MCP Registry on release ([#209](https://github.com/oolio-group/signoz-mcp-server/pull/209))
+
+### Other
+- post-release v0.14.0 ([#301](https://github.com/oolio-group/signoz-mcp-server/pull/301))
+- port the Go e2e families to the Python harness ([#298](https://github.com/oolio-group/signoz-mcp-server/pull/298))
+- foundry-provisioned e2e harness and CI workflow ([#297](https://github.com/oolio-group/signoz-mcp-server/pull/297))
+- pre-release v0.13.0 ([#293](https://github.com/oolio-group/signoz-mcp-server/pull/293))
+- upgrade to go 1.26 ([#290](https://github.com/oolio-group/signoz-mcp-server/pull/290))
+- add selected official conformance ([#287](https://github.com/oolio-group/signoz-mcp-server/pull/287))
+- pre-release v0.12.0 ([#282](https://github.com/oolio-group/signoz-mcp-server/pull/282))
+- pre-release v0.11.0 ([#278](https://github.com/oolio-group/signoz-mcp-server/pull/278))
+- pre-release v0.10.0 ([#261](https://github.com/oolio-group/signoz-mcp-server/pull/261))
+- bump google.golang.org/grpc from 1.79.3 to 1.82.1 ([#259](https://github.com/oolio-group/signoz-mcp-server/pull/259))
+- pre-release v0.9.0 ([#257](https://github.com/oolio-group/signoz-mcp-server/pull/257))
+- add Inspector protocol CI ([#254](https://github.com/oolio-group/signoz-mcp-server/pull/254))
+- pre-release v0.8.0 ([#239](https://github.com/oolio-group/signoz-mcp-server/pull/239))
+- pre-release v0.7.0 ([#230](https://github.com/oolio-group/signoz-mcp-server/pull/230))
+- bump golang.org/x/net from 0.51.0 to 0.55.0 ([#228](https://github.com/oolio-group/signoz-mcp-server/pull/228))
+- pre-release v0.6.0 ([#224](https://github.com/oolio-group/signoz-mcp-server/pull/224))
+- pre-release v0.5.1 ([#204](https://github.com/oolio-group/signoz-mcp-server/pull/204))
+- [codex] Align docs tool registration parity ([#203](https://github.com/oolio-group/signoz-mcp-server/pull/203))
+- post-release v0.5.0 ([#202](https://github.com/oolio-group/signoz-mcp-server/pull/202))
+
 ## [0.14.0] - 2026-09-02
 
 ### Added
@@ -393,3 +473,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.12.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.11.0...v0.12.0
 [0.13.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.12.0...v0.13.0
 [0.14.0]: https://github.com/SigNoz/signoz-mcp-server/compare/v0.13.0...v0.14.0
+[0.14.1]: https://github.com/oolio-group/signoz-mcp-server/compare/v0.4.1...v0.14.1
